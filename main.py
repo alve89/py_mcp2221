@@ -12,14 +12,12 @@ from mcp2221_io.mqtt_handler import MQTTHandler
 
 def load_config(config_path='config.yaml'):
     """Lädt die YAML-Konfiguration"""
-    # Bestimme den absoluten Pfad zur Konfigurationsdatei
     module_dir = os.path.dirname(os.path.abspath(__file__))
     config_file = os.path.join(module_dir, config_path)
     print(f"[DEBUG] Lade Konfiguration aus {config_file}")
     try:
         with open(config_file, 'r') as file:
             config = yaml.safe_load(file)
-            # Füge die Actors-Konfiguration zum MQTT-Config hinzu
             if 'mqtt' in config:
                 config['mqtt']['actors'] = config['actors']
             return config
@@ -69,8 +67,8 @@ def main():
     if 'mqtt' in config:
         try:
             mqtt_handler = MQTTHandler(config['mqtt'])
+            controller.set_mqtt_handler(mqtt_handler)  # MQTT Handler dem Controller zuweisen
             mqtt_handler.connect()
-            mqtt_handler.publish_availability()
             print("[DEBUG] MQTT Handler initialisiert und verbunden")
         except Exception as e:
             print(f"[WARNING] MQTT konnte nicht initialisiert werden: {e}")
