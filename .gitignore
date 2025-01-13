@@ -1,0 +1,29 @@
+# Betriebssystem-spezifische Dateien
+.DS_Store
+Thumbs.db
+
+# Log-Dateien
+*.log
+
+# Temporäre Dateien und Verzeichnisse
+*.tmp
+*.bak
+*.swp
+
+# Node.js (falls verwendet)
+node_modules/
+npm-debug.log*
+
+# Python (falls verwendet)
+__pycache__/
+*.py[cod]
+
+# Java (falls verwendet)
+*.class
+target/
+
+# Sensitive Dateien
+.env
+*.key
+*.pem
+config.yaml

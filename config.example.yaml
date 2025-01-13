@@ -1,0 +1,35 @@
+# mcp2221_io/config.yaml
+
+# GPIO-Konfiguration
+actors:
+  relay1:
+    pin: G0
+    inverted: true
+    description: "Relais 1"
+  relay2:
+    pin: G1
+    inverted: true
+    description: "Relais 2"
+
+# Tastatur-Konfiguration
+key_mappings:
+  "1":
+    target: relay1
+    action: toggle
+  "2":
+    target: relay2
+    action: toggle
+  "q":
+    target: system
+    action: quit
+
+# MQTT-Konfiguration
+mqtt:
+  broker: mqtt-broker.local  # Deine Home Assistant IP
+  port: 1883
+  username: MQTT_USER    # Optional
+  password: MQTT_PASSWORD    # Optional
+  base_topic: mcp2221
+  discovery_prefix: homeassistant
+  device_name: "MCP2221 IO Controller"
+  device_id: mcp2221_controller
