@@ -147,6 +147,23 @@ class MQTTHandler:
         except Exception as e:
             print(f"[ERROR] Fehler beim Publizieren des States: {e}")
 
+    def publish_command(self, actor_id: str, command: str):
+        """Veröffentlicht ein Kommando für einen Actor"""
+        if not self.connected.is_set():
+            print(f"[WARNING] MQTT nicht verbunden - Kommando für {actor_id} kann nicht gesendet werden")
+            return
+            
+        topic = f"{self.base_topic}/{actor_id}/set"
+        print(f"[DEBUG] Publiziere Kommando {command} für {actor_id}")
+        try:
+            result = self.mqtt_client.publish(topic, command, qos=1)
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                print(f"[DEBUG] Kommando für {actor_id} erfolgreich publiziert")
+            else:
+                print(f"[WARNING] Fehler beim Publizieren des Kommandos für {actor_id}: {result.rc}")
+        except Exception as e:
+            print(f"[ERROR] Fehler beim Publizieren des Kommandos: {e}")
+
     def connect(self):
         try:
             print(f"[DEBUG] Verbinde mit MQTT Broker {self.config['broker']}:{self.config['port']}")
@@ -237,29 +254,6 @@ class MQTTHandler:
                 print(f"[DEBUG] Discovery für {actor_id} erfolgreich gesendet")
             else:
                 print(f"[WARNING] Timeout beim Senden der Discovery für {actor_id}")
-
-    def _handle_mqtt_command(self, actor_id: str, command: str):
-        """Verarbeitet MQTT-Kommandos"""
-        print(f"[DEBUG] MQTT Kommando empfangen: {actor_id} -> {command}")
-        if actor_id in self.command_callbacks:
-            actor = self.actors[actor_id]
-            entity_type = self.config['actors'][actor_id].get('entity_type', 'switch').lower()
-            
-            if entity_type == 'switch':
-                if command == "ON":
-                    actor.set(True)
-                elif command == "OFF":
-                    actor.set(False)
-            elif entity_type == 'button':
-                if command == "ON":
-                    actor.toggle()  # Für Button: Immer Toggle
-            
-            # State-Update über MQTT senden (nur für Switch)
-            if entity_type == 'switch' and self.mqtt_handler:
-                self.mqtt_handler.publish_state(actor_id, actor.state)
-        else:
-            print(f"[WARNING] Unbekannter Actor: {actor_id}")
-
 
     def get_startup_state(self, actor_id: str) -> bool:
         """Ermittelt den Startup-State für einen Aktor"""

@@ -4,6 +4,12 @@ import os
 import time
 import yaml
 
+# Umgebungsvariablen nur setzen wenn nicht bereits gesetzt
+if 'BLINKA_MCP2221' not in os.environ:
+    os.environ['BLINKA_MCP2221'] = '1'
+if 'BLINKA_MCP2221_RESET_DELAY' not in os.environ:
+    os.environ['BLINKA_MCP2221_RESET_DELAY'] = '-1'
+
 from mcp2221_io import IOController, Actor, SimpleInputHandler
 from mcp2221_io.mqtt_handler import MQTTHandler
 
@@ -60,7 +66,6 @@ def reset_actors_to_default(controller, config, mqtt_handler=None):
     for actor_id, actor_config in config['actors'].items():
         try:
             if actor_id in controller.actors:
-                actor = controller.actors[actor_id]
                 entity_type = actor_config.get('entity_type', 'switch').lower()
                 
                 # Nur für Switches den Standardwert setzen
@@ -69,13 +74,10 @@ def reset_actors_to_default(controller, config, mqtt_handler=None):
                     default_state = actor_config.get('startup_state', 'off').lower() == 'on'
                     print(f"[DEBUG] Setze {actor_id} auf Standardwert: {default_state}")
                     
-                    # Aktor auf Standardwert setzen
-                    actor.set(default_state)
-                    
-                    # Status an MQTT senden wenn verfügbar
+                    # Kommando über MQTT senden
                     if mqtt_handler:
-                        mqtt_handler.publish_state(actor_id, default_state)
-                        time.sleep(0.1)  # Kurze Pause für MQTT-Nachricht
+                        mqtt_handler.publish_command(actor_id, "ON" if default_state else "OFF")
+                        time.sleep(0.1)  # Kurze Pause für MQTT-Verarbeitung
                 
                 print(f"[DEBUG] {actor_id} erfolgreich zurückgesetzt")
         except Exception as e:
