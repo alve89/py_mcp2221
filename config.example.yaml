@@ -4,12 +4,16 @@
 actors:
   relay1:
     pin: G0
-    inverted: true
+    inverted: false
     description: "Relais 1"
-  relay2:
+    startup_state: "off"  # Mögliche Werte: on, off
+    entity_type: "switch"  # Optional: switch (default), button
+  button1:
     pin: G1
     inverted: true
-    description: "Relais 2"
+    description: "Button 1"
+    entity_type: "button"  # Optional: switch (default), button
+    reset_delay: 2.0  # Rückstellzeit in Sekunden, 0 für kein Zurücksetzen
 
 # Tastatur-Konfiguration
 key_mappings:
@@ -17,7 +21,7 @@ key_mappings:
     target: relay1
     action: toggle
   "2":
-    target: relay2
+    target: button1
     action: toggle
   "q":
     target: system
@@ -33,3 +37,16 @@ mqtt:
   discovery_prefix: homeassistant
   device_name: "MCP2221 IO Controller"
   device_id: mcp2221_controller
+
+  # Timeout-Konfiguration
+  timeouts:
+    connect: 5.0          # Timeout für MQTT-Verbindungsaufbau in Sekunden
+    state_restore: 3.0    # Timeout für Wiederherstellung der States in Sekunden
+    keepalive: 60         # MQTT Keepalive in Sekunden
+    discovery: 5.0        # Timeout für Discovery-Publishes in Sekunden
+    disconnect: 0.5       # Wartezeit beim Trennen der Verbindung in Sekunden
+  
+  # Reconnect-Konfiguration
+  reconnect:
+    min_delay: 1          # Minimale Reconnect-Verzögerung in Sekunden
+    max_delay: 30         # Maximale Reconnect-Verzögerung in Sekunden
