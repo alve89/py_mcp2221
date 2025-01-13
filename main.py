@@ -4,9 +4,6 @@ import os
 import time
 import yaml
 
-# Umgebungsvariable MUSS vor board/digitalio Import gesetzt werden
-os.environ['BLINKA_MCP2221'] = '1'
-
 from mcp2221_io import IOController, Actor, SimpleInputHandler
 from mcp2221_io.mqtt_handler import MQTTHandler
 
@@ -30,7 +27,17 @@ def setup_actors(controller, actor_config):
     print("[DEBUG] Konfiguriere Aktoren")
     for name, cfg in actor_config.items():
         try:
-            actor = Actor(cfg['pin'], inverted=cfg.get('inverted', False))
+            # Reset delay nur für Buttons berücksichtigen
+            reset_delay = 0.0
+            if cfg.get('entity_type', 'switch').lower() == 'button':
+                reset_delay = float(cfg.get('reset_delay', 0.0))
+                print(f"[DEBUG] Button {name} mit Reset-Delay {reset_delay}s konfiguriert")
+            
+            actor = Actor(
+                cfg['pin'], 
+                inverted=cfg.get('inverted', False),
+                reset_delay=reset_delay
+            )
             controller.add_actor(name, actor)
             print(f"[DEBUG] Actor {name} ({cfg['description']}) an Pin {cfg['pin']} konfiguriert")
         except Exception as e:
@@ -45,6 +52,34 @@ def setup_key_mappings(key_config):
         mappings[key] = (cfg['target'], cfg['action'], None)
     print(f"[DEBUG] Key-Mappings erstellt: {mappings}")
     return mappings
+
+def reset_actors_to_default(controller, config, mqtt_handler=None):
+    """Setzt alle Aktoren auf ihre Standardwerte zurück"""
+    print("[DEBUG] Setze Aktoren auf Standardwerte zurück")
+    
+    for actor_id, actor_config in config['actors'].items():
+        try:
+            if actor_id in controller.actors:
+                actor = controller.actors[actor_id]
+                entity_type = actor_config.get('entity_type', 'switch').lower()
+                
+                # Nur für Switches den Standardwert setzen
+                if entity_type == 'switch':
+                    # Standardwert aus Konfiguration ermitteln
+                    default_state = actor_config.get('startup_state', 'off').lower() == 'on'
+                    print(f"[DEBUG] Setze {actor_id} auf Standardwert: {default_state}")
+                    
+                    # Aktor auf Standardwert setzen
+                    actor.set(default_state)
+                    
+                    # Status an MQTT senden wenn verfügbar
+                    if mqtt_handler:
+                        mqtt_handler.publish_state(actor_id, default_state)
+                        time.sleep(0.1)  # Kurze Pause für MQTT-Nachricht
+                
+                print(f"[DEBUG] {actor_id} erfolgreich zurückgesetzt")
+        except Exception as e:
+            print(f"[ERROR] Fehler beim Zurücksetzen von {actor_id}: {e}")
 
 def main():
     print("[DEBUG] Starte Hauptprogramm")
@@ -67,7 +102,7 @@ def main():
     if 'mqtt' in config:
         try:
             mqtt_handler = MQTTHandler(config['mqtt'])
-            controller.set_mqtt_handler(mqtt_handler)  # MQTT Handler dem Controller zuweisen
+            controller.set_mqtt_handler(mqtt_handler)
             mqtt_handler.connect()
             print("[DEBUG] MQTT Handler initialisiert und verbunden")
         except Exception as e:
@@ -83,7 +118,13 @@ def main():
     print("\nSystem gestartet. Steuerung:")
     for key, cfg in config['key_mappings'].items():
         if cfg['target'] in config['actors']:
-            print(f"  {key}: {cfg['action'].capitalize()} {config['actors'][cfg['target']]['description']} (GPIO '{config['actors'][cfg['target']]['pin']}')")
+            actor_cfg = config['actors'][cfg['target']]
+            desc = f"{cfg['action'].capitalize()} {actor_cfg['description']} (GPIO '{actor_cfg['pin']}'"
+            if actor_cfg.get('entity_type') == 'button' and actor_cfg.get('reset_delay', 0) > 0:
+                desc += f", Reset nach {actor_cfg['reset_delay']}s)"
+            else:
+                desc += ")"
+            print(f"  {key}: {desc}")
         elif cfg['target'] == 'system':
             print(f"  {key}: {cfg['action'].capitalize()}")
     print("\nBitte Taste eingeben und Enter drücken:")
@@ -103,6 +144,11 @@ def main():
         print("[DEBUG] Stoppe Input Handler...")
         controller.stop()
         print("[DEBUG] Input Handler gestoppt")
+        
+        # Aktoren auf Standardwerte zurücksetzen
+        print("[DEBUG] Setze Aktoren zurück...")
+        reset_actors_to_default(controller, config, mqtt_handler)
+        print("[DEBUG] Aktoren zurückgesetzt")
         
         # Stoppe MQTT wenn aktiv
         if mqtt_handler:
