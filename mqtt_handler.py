@@ -21,7 +21,21 @@ class MQTTHandler:
         self.mqtt_client.on_publish = self._on_publish
         
         # Client Konfiguration
-        self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
+        self.timeouts = config.get('timeouts', {
+            'connect': 5.0,
+            'state_restore': 3.0,
+            'keepalive': 60,
+            'discovery': 5.0,
+            'disconnect': 0.5
+        })
+        self.reconnect = config.get('reconnect', {
+            'min_delay': 1,
+            'max_delay': 30
+        })
+        self.mqtt_client.reconnect_delay_set(
+            min_delay=self.reconnect['min_delay'],
+            max_delay=self.reconnect['max_delay']
+        )
         self.base_topic = config.get('base_topic', 'mcp2221')
         
         # Last Will setzen
@@ -67,7 +81,7 @@ class MQTTHandler:
     def _restore_states(self):
         """Stellt die letzten bekannten Zustände wieder her"""
         print("[DEBUG] Stelle letzte bekannte Zustände wieder her...")
-        restore_timeout = 3.0  # Timeout in Sekunden
+        restore_timeout = self.timeouts['state_restore']
         pending_states = set(self.config['actors'].keys())
         
         def on_state_message(client, userdata, message):
@@ -167,11 +181,12 @@ class MQTTHandler:
     def connect(self):
         try:
             print(f"[DEBUG] Verbinde mit MQTT Broker {self.config['broker']}:{self.config['port']}")
-            self.mqtt_client.connect(self.config['broker'], self.config['port'], keepalive=60)
+            self.mqtt_client.connect(self.config['broker'], self.config['port'], 
+                                   keepalive=self.timeouts['keepalive'])
             self.mqtt_client.loop_start()
             
             # Warte auf Verbindung
-            if not self.connected.wait(timeout=5.0):
+            if not self.connected.wait(timeout=self.timeouts['connect']):
                 raise Exception("Timeout beim Verbinden mit MQTT Broker")
                 
             print("[DEBUG] MQTT Verbindung hergestellt, warte 1 Sekunde...")
@@ -247,7 +262,7 @@ class MQTTHandler:
             
             # Warte auf Bestätigung
             start_time = time.time()
-            while not result.is_published() and (time.time() - start_time) < 5:
+            while not result.is_published() and (time.time() - start_time) < self.timeouts['discovery']:
                 time.sleep(0.1)
                 
             if result.is_published():
