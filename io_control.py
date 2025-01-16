@@ -1,5 +1,3 @@
-# mcp2221_io/io_control.py
-
 from abc import ABC, abstractmethod
 from typing import Dict, List, Callable
 import threading
@@ -7,6 +5,7 @@ import time
 import select
 import sys
 from .io_base import Actor, Sensor
+from .logging_config import logger
 
 class InputEvent:
     """Repräsentiert ein Eingabe-Event"""
@@ -61,18 +60,18 @@ class SimpleInputHandler(InputHandler):
             if select.select([sys.stdin], [], [], 0.1)[0]:  # 100ms Timeout
                 key = sys.stdin.readline().strip()
                 if key:  # Ignoriere leere Eingaben
-                    print(f"[DEBUG] Taste empfangen: {key}")
+                    logger.debug(f"Taste empfangen: {key}")
                     if key in self.key_mappings:
-                        print(f"[DEBUG] Taste {key} ist in key_mappings")
+                        logger.debug(f"Taste {key} ist in key_mappings")
                         target, action, value = self.key_mappings[key]
                         event = InputEvent('input', action, target, value)
                         self.notify_observers(event)
                     else:
-                        print(f"[DEBUG] Taste {key} nicht in key_mappings!")
+                        logger.debug(f"Taste {key} nicht in key_mappings!")
         except EOFError:
             self._running = False
         except Exception as e:
-            print(f"[ERROR] Fehler beim Lesen der Eingabe: {e}")
+            logger.error(f"Fehler beim Lesen der Eingabe: {e}")
             if not self._running:  # Wenn wir uns im Shutdown befinden
                 return
 
@@ -86,30 +85,30 @@ class IOController:
         self.mqtt_handler = None
 
     def add_actor(self, name: str, actor: Actor):
-        print(f"[DEBUG] Actor {name} hinzugefügt")
+        logger.debug(f"Actor {name} hinzugefügt")
         self.actors[name] = actor
 
     def add_sensor(self, name: str, sensor: Sensor):
-        print(f"[DEBUG] Sensor {name} hinzugefügt")
+        logger.debug(f"Sensor {name} hinzugefügt")
         self.sensors[name] = sensor
 
     def add_input_handler(self, handler: InputHandler):
-        print("[DEBUG] Input Handler wird hinzugefügt")
+        logger.debug("Input Handler wird hinzugefügt")
         handler.add_observer(self._handle_event)
         self.input_handlers.append(handler)
         handler.start()
-        print("[DEBUG] Input Handler wurde gestartet")
+        logger.debug("Input Handler wurde gestartet")
 
     def start(self):
         """Startet den Controller"""
-        print("[DEBUG] Starte Controller")
+        logger.debug("Starte Controller")
         self.running = True
         for handler in self.input_handlers:
             handler.start()
 
     def stop(self):
         """Stoppt den Controller"""
-        print("[DEBUG] Stoppe Controller")
+        logger.debug("Stoppe Controller")
         self.running = False
         for handler in self.input_handlers:
             handler.stop()
@@ -125,60 +124,85 @@ class IOController:
             
             mqtt_handler.register_command_callback(actor_id, self._handle_mqtt_command)
             
+            # Reset-Callback registrieren wenn Reset-Delay konfiguriert
+            if actor_config.get('auto_reset', False) and float(actor_config.get('reset_delay', 0)) > 0:
+                def create_reset_handler(aid):
+                    def on_reset():
+                        logger.debug(f"Reset-Event für {aid}")
+                        if self.mqtt_handler:
+                            # Nutze die normale Command-Verarbeitung für den Reset
+                            self._handle_mqtt_command(aid, "OFF")
+                    return on_reset
+                
+                # Callback an Actor binden
+                actor.on_reset = create_reset_handler(actor_id)
+                logger.debug(f"Reset-Handler für {actor_id} registriert")
+            
             # Startup State setzen
             startup_state = mqtt_handler.get_startup_state(actor_id)
             
             # Nur für Switch Typ einen initialen State setzen
             if entity_type == 'switch':
-                print(f"[DEBUG] Setze Startup State für {actor_id}: {startup_state}")
+                logger.debug(f"Setze Startup State für {actor_id}: {startup_state}")
                 self._execute_actor_command(actor_id, "ON" if startup_state else "OFF")
             elif entity_type == 'button':
-                print(f"[DEBUG] Button {actor_id} initialisiert")
+                logger.debug(f"Button {actor_id} initialisiert")
 
     def _handle_mqtt_command(self, actor_id: str, command: str):
         """Verarbeitet MQTT-Kommandos"""
-        print(f"[DEBUG] MQTT Kommando empfangen: {actor_id} -> {command}")
+        logger.debug(f"MQTT Kommando empfangen: {actor_id} -> {command}")
         if actor_id in self.actors:
             self._execute_actor_command(actor_id, command)
         else:
-            print(f"[WARNING] Unbekannter Actor: {actor_id}")
+            logger.warning(f"Unbekannter Actor: {actor_id}")
 
     def _execute_actor_command(self, actor_id: str, command: str):
         """Führt ein Kommando für einen Actor aus"""
         if actor_id not in self.actors:
-            print(f"[WARNING] Unbekannter Actor: {actor_id}")
+            logger.warning(f"Unbekannter Actor: {actor_id}")
             return
 
         actor = self.actors[actor_id]
         actor_config = self.mqtt_handler.config['actors'].get(actor_id, {})
         entity_type = actor_config.get('entity_type', 'switch').lower()
         
+        logger.debug(f"Führe Kommando {command} für {actor_id} (Typ: {entity_type}) aus")
+        
         if entity_type == 'switch':
-            if command == "ON":
-                actor.set(True)
-            elif command == "OFF":
-                actor.set(False)
-            # State-Update über MQTT senden
+            # Physischen Zustand setzen
+            new_state = (command == "ON")
+            actor.set(new_state)
+            logger.debug(f"Physischer Zustand für {actor_id} auf {new_state} gesetzt")
+            
+            # MQTT updaten
             if self.mqtt_handler:
-                self.mqtt_handler.publish_state(actor_id, actor.state)
+                # State Topic aktualisieren
+                self.mqtt_handler.mqtt_client.publish(
+                    f"{self.mqtt_handler.base_topic}/{actor_id}/state",
+                    command,
+                    qos=1,
+                    retain=True
+                )
+                logger.debug(f"MQTT State für {actor_id} auf {command} gesetzt")
+                
         elif entity_type == 'button':
             if command == "ON":
                 actor.toggle()  # Für Button: Immer Toggle
 
     def _handle_event(self, event: InputEvent):
         """Verarbeitet Events von Input Handlern"""
-        print(f"[DEBUG] Event empfangen: {event.source} -> {event.target}:{event.action}")
+        logger.debug(f"Event empfangen: {event.source} -> {event.target}:{event.action}")
         
         # Spezialbehandlung für System-Events
         if event.target == 'system':
             if event.action == 'quit':
-                print("[DEBUG] Quit-Command empfangen, beende Programm...")
+                logger.debug("Quit-Command empfangen, beende Programm...")
                 self.running = False
             return
         
         # Normale Actor-Events über MQTT-Set routen
         if event.target in self.actors:
-            print(f"[DEBUG] Actor {event.target} gefunden")
+            logger.debug(f"Actor {event.target} gefunden")
             actor_config = self.mqtt_handler.config['actors'].get(event.target, {})
             entity_type = actor_config.get('entity_type', 'switch').lower()
             
@@ -195,4 +219,4 @@ class IOController:
                 
                 self.mqtt_handler.publish_command(event.target, command)
             else:
-                print("[WARNING] MQTT Handler nicht verfügbar - Kommando kann nicht gesendet werden")
+                logger.warning("MQTT Handler nicht verfügbar - Kommando kann nicht gesendet werden")
