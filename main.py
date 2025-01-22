@@ -4,10 +4,10 @@ import yaml
 from .logging_config import logger
 
 # Umgebungsvariablen nur setzen wenn nicht bereits gesetzt
-if 'BLINKA_MCP2221' not in os.environ:
-    os.environ['BLINKA_MCP2221'] = '1'
-if 'BLINKA_MCP2221_RESET_DELAY' not in os.environ:
-    os.environ['BLINKA_MCP2221_RESET_DELAY'] = '-1'
+# if 'BLINKA_MCP2221' not in os.environ:
+#     os.environ['BLINKA_MCP2221'] = '1'
+# if 'BLINKA_MCP2221_RESET_DELAY' not in os.environ:
+#     os.environ['BLINKA_MCP2221_RESET_DELAY'] = '-1'
 
 from mcp2221_io import IOController, Actor, SimpleInputHandler
 from mcp2221_io.mqtt_handler import MQTTHandler
