@@ -71,6 +71,19 @@ class MCP2221Device:
         finally:
             self.close()
 
+    def check_board_status(self):
+        """Prüft den Status des MCP2221 Boards"""
+        try:
+            # Überprüfen anhand bestehender GPIO-Konfiguration
+            import board
+            if hasattr(board, 'G0'):
+                pin = getattr(board, 'G0')
+                if pin:
+                    return True, "OK"
+            return False, "Board nicht initialisiert"
+        except Exception as e:
+            return False, str(e)
+
 def patch_blinka():
     """Patcht die Blinka Library"""
     from importlib import import_module
