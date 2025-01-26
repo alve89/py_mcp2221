@@ -1,3 +1,6 @@
+# mqtt_handler.py
+# Version: 1.2.0
+
 import paho.mqtt.client as mqtt
 import json
 from typing import Dict, Callable
@@ -32,8 +35,16 @@ class MQTTHandler:
         )
         
         self.base_topic = config.get('base_topic', 'mcp2221')
+        
+        # Set last will for device status, board status and debug messages
         self.mqtt_client.will_set(
             f"{self.base_topic}/status",
+            "offline",
+            qos=1,
+            retain=True
+        )
+        self.mqtt_client.will_set(
+            f"{self.base_topic}/board_status/state",
             "offline",
             qos=1,
             retain=True
@@ -56,7 +67,10 @@ class MQTTHandler:
                     self._board_status = status
                     self._board_status_message = message
                     self.publish_board_status()
-                time.sleep(10)  # Reduziert auf 10 Sekunden
+                    self.publish_debug_message(f"Board Status: {'Online' if status else 'Offline'} - {message}")
+                    # Update all actor availabilities when board status changes
+                    self.publish_all_states()
+                time.sleep(10)
                 
         self._board_status_timer = threading.Thread(target=check_status, daemon=True)
         self._board_status_timer.start()
@@ -82,12 +96,39 @@ class MQTTHandler:
             retain=True
         )
 
+    def publish_debug_message(self, message: str):
+        """Veröffentlicht Debug-Nachrichten via MQTT"""
+        if not self.connected.is_set():
+            return
+            
+        topic = f"{self.base_topic}/debug"
+        self.mqtt_client.publish(topic, message, qos=1, retain=True)
+
     def publish_all_states(self):
         """Aktualisiert die States aller Aktoren"""
         for actor_id in self.config['actors'].keys():
-            topic = f"{self.base_topic}/{actor_id}/status"
-            state = "online" if self._board_status else "offline"
-            self.mqtt_client.publish(topic, state, qos=1, retain=True)
+            # Wenn das Board offline ist, setze auch alle Aktoren auf offline
+            if not self._board_status:
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{actor_id}/status",
+                    "offline",
+                    qos=1,
+                    retain=True
+                )
+                # Setze Aktoren-State auf OFF wenn Board offline
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{actor_id}/state",
+                    "OFF",
+                    qos=1,
+                    retain=True
+                )
+            else:
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{actor_id}/status",
+                    "online",
+                    qos=1,
+                    retain=True
+                )
 
     def register_command_callback(self, actor_id: str, callback: Callable[[str, str], None]):
         logger.debug(f"Registriere Command Callback für {actor_id}")
@@ -101,7 +142,7 @@ class MQTTHandler:
             self._restore_states()
             self.mqtt_client.publish(f"{self.base_topic}/status", "online", qos=1, retain=True)
             
-            # Abonniere Topics
+            # Subscribe to topics
             topics = []
             for actor_id in self.config['actors'].keys():
                 command_topic = f"{self.base_topic}/{actor_id}/set"
@@ -114,6 +155,7 @@ class MQTTHandler:
 
     def _restore_states(self):
         logger.debug("Stelle letzte bekannte Zustände wieder her...")
+        self.publish_debug_message("Stelle Zustände wieder her...")
         restore_timeout = float(self.config['timeouts'].get('state_restore', 3.0))
         pending_states = set(self.config['actors'].keys())
         
@@ -125,11 +167,14 @@ class MQTTHandler:
                     self.restored_states[actor_id] = (state_str == "ON")
                     pending_states.remove(actor_id)
                     logger.debug(f"Wiederhergestellter State für {actor_id}: {state_str}")
+                    self.publish_debug_message(f"State für {actor_id} wiederhergestellt: {state_str}")
                     
                     if not pending_states:
                         self.restore_complete.set()
             except Exception as e:
-                logger.error(f"Fehler beim Wiederherstellen des States: {e}")
+                error_msg = f"Fehler beim Wiederherstellen des States: {e}"
+                logger.error(error_msg)
+                self.publish_debug_message(error_msg)
 
         original_on_message = self.mqtt_client.on_message
         self.mqtt_client.on_message = on_state_message
@@ -137,17 +182,27 @@ class MQTTHandler:
         try:
             if not self.restore_complete.wait(timeout=restore_timeout):
                 logger.warning("Timeout beim Wiederherstellen der States")
+                self.publish_debug_message("Timeout beim Wiederherstellen der States")
                 for actor_id in pending_states:
                     startup_state = self.config['actors'][actor_id].get('startup_state', 'off')
                     if startup_state in ['on', 'off']:
                         self.restored_states[actor_id] = (startup_state == 'on')
                         logger.debug(f"Default State für {actor_id}: {startup_state}")
+                        self.publish_debug_message(f"Default State für {actor_id}: {startup_state}")
         finally:
             self.mqtt_client.on_message = original_on_message
 
     def _on_disconnect(self, client, userdata, rc):
         logger.debug(f"MQTT Verbindung getrennt mit Code {rc}")
         self.connected.clear()
+        self.publish_debug_message(f"MQTT Verbindung getrennt mit Code {rc}")
+        # Ensure board status is set to offline on disconnect
+        self.mqtt_client.publish(
+            f"{self.base_topic}/board_status/state",
+            "offline",
+            qos=1,
+            retain=True
+        )
 
     def _on_message(self, client, userdata, message):
         try:
@@ -158,27 +213,35 @@ class MQTTHandler:
             topic_parts = topic.split('/')
             if len(topic_parts) == 3 and topic_parts[2] == 'set':
                 actor_id = topic_parts[1]
-                if actor_id in self.command_callbacks and self._board_status:
-                    logger.debug(f"Führe Callback für {actor_id} aus mit Wert {payload}")
-                    self.command_callbacks[actor_id](actor_id, payload)
-                else:
-                    if not self._board_status:
-                        logger.warning(f"Board nicht verfügbar - Kommando für {actor_id} wird ignoriert")
+                if actor_id in self.command_callbacks:
+                    if self._board_status:
+                        logger.debug(f"Führe Callback für {actor_id} aus mit Wert {payload}")
+                        self.command_callbacks[actor_id](actor_id, payload)
                     else:
-                        logger.warning(f"Kein Callback für {actor_id} registriert")
+                        msg = f"Board nicht verfügbar - Kommando für {actor_id} wird ignoriert"
+                        logger.warning(msg)
+                        self.publish_debug_message(msg)
+                else:
+                    logger.warning(f"Kein Callback für {actor_id} registriert")
         except Exception as e:
-            logger.error(f"Fehler bei der Nachrichtenverarbeitung: {e}")
+            error_msg = f"Fehler bei der Nachrichtenverarbeitung: {e}"
+            logger.error(error_msg)
+            self.publish_debug_message(error_msg)
 
     def _on_publish(self, client, userdata, mid):
         logger.debug(f"MQTT Nachricht {mid} erfolgreich veröffentlicht")
 
     def publish_state(self, actor_id: str, state: bool):
         if not self.connected.is_set():
-            logger.warning(f"MQTT nicht verbunden - Status für {actor_id} kann nicht gesendet werden")
+            msg = f"MQTT nicht verbunden - Status für {actor_id} kann nicht gesendet werden"
+            logger.warning(msg)
+            self.publish_debug_message(msg)
             return
             
         if not self._board_status:
-            logger.warning(f"Board nicht verfügbar - Status für {actor_id} kann nicht gesendet werden")
+            msg = f"Board nicht verfügbar - Status für {actor_id} kann nicht gesendet werden"
+            logger.warning(msg)
+            self.publish_debug_message(msg)
             return
             
         state_str = "ON" if state else "OFF"
@@ -189,17 +252,25 @@ class MQTTHandler:
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 logger.debug(f"State für {actor_id} erfolgreich publiziert")
             else:
-                logger.warning(f"Fehler beim Publizieren des States für {actor_id}: {result.rc}")
+                msg = f"Fehler beim Publizieren des States für {actor_id}: {result.rc}"
+                logger.warning(msg)
+                self.publish_debug_message(msg)
         except Exception as e:
-            logger.error(f"Fehler beim Publizieren des States: {e}")
+            error_msg = f"Fehler beim Publizieren des States: {e}"
+            logger.error(error_msg)
+            self.publish_debug_message(error_msg)
 
     def publish_command(self, actor_id: str, command: str):
         if not self.connected.is_set():
-            logger.warning(f"MQTT nicht verbunden - Kommando für {actor_id} kann nicht gesendet werden")
+            msg = f"MQTT nicht verbunden - Kommando für {actor_id} kann nicht gesendet werden"
+            logger.warning(msg)
+            self.publish_debug_message(msg)
             return
             
         if not self._board_status:
-            logger.warning(f"Board nicht verfügbar - Kommando für {actor_id} kann nicht gesendet werden")
+            msg = f"Board nicht verfügbar - Kommando für {actor_id} kann nicht gesendet werden"
+            logger.warning(msg)
+            self.publish_debug_message(msg)
             return
             
         topic = f"{self.base_topic}/{actor_id}/set"
@@ -209,9 +280,13 @@ class MQTTHandler:
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 logger.debug(f"Kommando für {actor_id} erfolgreich publiziert")
             else:
-                logger.warning(f"Fehler beim Publizieren des Kommandos für {actor_id}: {result.rc}")
+                msg = f"Fehler beim Publizieren des Kommandos für {actor_id}: {result.rc}"
+                logger.warning(msg)
+                self.publish_debug_message(msg)
         except Exception as e:
-            logger.error(f"Fehler beim Publizieren des Kommandos: {e}")
+            error_msg = f"Fehler beim Publizieren des Kommandos: {e}"
+            logger.error(error_msg)
+            self.publish_debug_message(error_msg)
 
     def connect(self):
         try:
@@ -224,15 +299,21 @@ class MQTTHandler:
             self.mqtt_client.loop_start()
             
             if not self.connected.wait(timeout=self.config['timeouts'].get('connect', 5.0)):
-                raise Exception("Timeout beim Verbinden mit MQTT Broker")
+                error_msg = "Timeout beim Verbinden mit MQTT Broker"
+                logger.error(error_msg)
+                self.publish_debug_message(error_msg)
+                raise Exception(error_msg)
                 
             logger.debug("MQTT Verbindung hergestellt")
+            self.publish_debug_message("MQTT Verbindung hergestellt")
             time.sleep(1)
             
             self.publish_discoveries()
             
         except Exception as e:
-            logger.error(f"MQTT Verbindungsfehler: {e}")
+            error_msg = f"MQTT Verbindungsfehler: {e}"
+            logger.error(error_msg)
+            self.publish_debug_message(error_msg)
             raise
 
     def publish_discoveries(self):
@@ -258,7 +339,14 @@ class MQTTHandler:
             "json_attributes_topic": f"{self.base_topic}/board_status/message",
             "payload_on": "online",
             "payload_off": "offline",
-            "device_class": "connectivity"
+            "device_class": "connectivity",
+            "availability": [
+                {
+                    "topic": f"{self.base_topic}/status",
+                    "payload_available": "online",
+                    "payload_not_available": "offline"
+                }
+            ]
         }
         
         self.mqtt_client.publish(
@@ -267,6 +355,8 @@ class MQTTHandler:
             qos=1,
             retain=True
         )
+
+
         
         # Actor Discoveries
         for actor_id, actor_config in self.config['actors'].items():
@@ -349,7 +439,47 @@ class MQTTHandler:
     def disconnect(self):
         try:
             logger.debug("Sende Offline-Status...")
-            self.mqtt_client.publish(f"{self.base_topic}/status", "offline", qos=1, retain=True)
+            
+            # Set debug sensor offline
+            self.mqtt_client.publish(
+                f"{self.base_topic}/debug",
+                "System wird heruntergefahren",
+                qos=1,
+                retain=True
+            )
+            
+            # Set board status to offline first
+            self.mqtt_client.publish(
+                f"{self.base_topic}/board_status/state",
+                "offline",
+                qos=1,
+                retain=True
+            )
+            
+            # Set device status to offline
+            self.mqtt_client.publish(
+                f"{self.base_topic}/status",
+                "offline",
+                qos=1,
+                retain=True
+            )
+            
+            # Set all actors to offline
+            for actor_id in self.config['actors'].keys():
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{actor_id}/status",
+                    "offline",
+                    qos=1,
+                    retain=True
+                )
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{actor_id}/state",
+                    "OFF",
+                    qos=1,
+                    retain=True
+                )
+            
+            # Wait for messages to be sent
             time.sleep(self.config['timeouts'].get('disconnect', 0.5))
             
             logger.debug("Stoppe MQTT Client...")
