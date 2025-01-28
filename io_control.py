@@ -7,7 +7,8 @@ import threading
 import time
 import select
 import sys
-from .io_base import Actor, Sensor
+from .io_actor import Actor
+from .io_sensor import Sensor
 from .logging_config import logger
 
 class InputEvent:
