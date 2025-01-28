@@ -1,3 +1,6 @@
+# io_control.py
+# Version: 1.5.1
+
 from abc import ABC, abstractmethod
 from typing import Dict, List, Callable
 import threading
@@ -130,8 +133,12 @@ class IOController:
                     def on_reset():
                         logger.debug(f"Reset-Event für {aid}")
                         if self.mqtt_handler:
-                            # Nutze die normale Command-Verarbeitung für den Reset
-                            self._handle_mqtt_command(aid, "OFF")
+                            if actor_config.get('entity_type') == 'lock':
+                                # Nach Reset wieder LOCK
+                                self._handle_mqtt_command(aid, "LOCK")
+                            else:
+                                # Nach Reset wieder OFF
+                                self._handle_mqtt_command(aid, "OFF")
                     return on_reset
                 
                 # Callback an Actor binden
@@ -140,13 +147,19 @@ class IOController:
             
             # Startup State setzen
             startup_state = mqtt_handler.get_startup_state(actor_id)
+            logger.debug(f"Setze Startup State für {actor_id}: {startup_state}")
             
-            # Nur für Switch Typ einen initialen State setzen
-            if entity_type == 'switch':
-                logger.debug(f"Setze Startup State für {actor_id}: {startup_state}")
-                self._execute_actor_command(actor_id, "ON" if startup_state else "OFF")
+            # State basierend auf Entity-Typ setzen
+            if entity_type == 'lock':
+                command = "LOCK" if startup_state else "UNLOCK"
+                logger.debug(f"Lock {actor_id} Startup: State={startup_state}, Command={command}")
+            elif entity_type == 'switch':
+                command = "ON" if startup_state else "OFF"
             elif entity_type == 'button':
                 logger.debug(f"Button {actor_id} initialisiert")
+                continue
+                
+            self._execute_actor_command(actor_id, command)
 
     def _handle_mqtt_command(self, actor_id: str, command: str):
         """Verarbeitet MQTT-Kommandos"""
@@ -171,6 +184,7 @@ class IOController:
         if entity_type == 'switch':
             # Physischen Zustand setzen
             new_state = (command == "ON")
+            logger.debug(f"Switch {actor_id}: Kommando={command}, new_state={new_state}")
             actor.set(new_state)
             logger.debug(f"Physischer Zustand für {actor_id} auf {new_state} gesetzt")
             
@@ -185,9 +199,24 @@ class IOController:
                 )
                 logger.debug(f"MQTT State für {actor_id} auf {command} gesetzt")
                 
-        elif entity_type == 'button':
-            if command == "ON":
-                actor.toggle()  # Für Button: Immer Toggle
+        elif entity_type == 'lock':
+            # Analog zu switch: UNLOCK = ON (True)
+            new_state = (command == "UNLOCK")
+            logger.debug(f"Lock {actor_id}: Kommando={command}, new_state={new_state}")
+            actor.set(new_state)
+            logger.debug(f"Lock {actor_id}: State {new_state} gesetzt (UNLOCK={command=='UNLOCK'})")
+            
+            # MQTT updaten
+            if self.mqtt_handler:
+                # State Topic aktualisieren
+                state = "UNLOCKED" if new_state else "LOCKED"
+                self.mqtt_handler.mqtt_client.publish(
+                    f"{self.mqtt_handler.base_topic}/{actor_id}/state",
+                    state,
+                    qos=1,
+                    retain=True
+                )
+                logger.debug(f"MQTT State für {actor_id} auf {state} gesetzt")
 
     def _handle_event(self, event: InputEvent):
         """Verarbeitet Events von Input Handlern"""
@@ -216,6 +245,12 @@ class IOController:
                         command = "ON" if event.value else "OFF"
                 elif entity_type == 'button':
                     command = "ON"  # Buttons immer ON senden
+                elif entity_type == 'lock':
+                    if event.action == 'toggle':
+                        current_state = self.actors[event.target].state
+                        command = "LOCK" if current_state else "UNLOCK"
+                    else:
+                        command = "LOCK" if event.value else "UNLOCK"
                 
                 self.mqtt_handler.publish_command(event.target, command)
             else:

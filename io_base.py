@@ -1,14 +1,11 @@
+# io_base.py
+# Version: 1.5.2
+
 import os
 import time
 import threading
 from enum import Enum
 from .logging_config import logger
-
-# Umgebungsvariablen nur setzen wenn nicht bereits gesetzt
-# if 'BLINKA_MCP2221' not in os.environ:
-#     os.environ['BLINKA_MCP2221'] = '1'
-# if 'BLINKA_MCP2221_RESET_DELAY' not in os.environ:
-#     os.environ['BLINKA_MCP2221_RESET_DELAY'] = '-1'
 
 import board
 import digitalio
@@ -76,7 +73,7 @@ class Actor(IODevice):
         self._is_resetting = False  # Flag für Reset-Zustand
         # Initialen Zustand setzen
         self.set(False)
-        logger.debug(f"Actor {pin} mit initialem Zustand False erstellt")
+        logger.debug(f"Actor {pin} mit initialem Zustand False erstellt, reset_delay={reset_delay}")
 
     @property
     def state(self) -> bool:
@@ -84,28 +81,31 @@ class Actor(IODevice):
 
     def set(self, value: bool):
         """Setzt den Zustand des Aktors"""
-        logger.debug(f"Actor {self.pin_name}: Setze Zustand auf {value}")
+        logger.debug(f"Actor {self.pin_name}: Setze logischen Zustand auf {value} (reset_delay={self._reset_delay}, is_resetting={self._is_resetting})")
         self._state = value
         physical_value = self._convert_value(value)
-        logger.debug(f"Actor {self.pin_name}: Setze physischen Pin auf {physical_value}")
+        logger.debug(f"Actor {self.pin_name}: Setze physischen Pin von {self.pin.value} auf {physical_value}")
         try:
             self.pin.value = physical_value
-            logger.debug(f"Actor {self.pin_name}: Pin-Wert erfolgreich gesetzt")
+            logger.debug(f"Actor {self.pin_name}: Pin-Wert wurde auf {physical_value} gesetzt")
             
+            # Prüfung für Reset-Timer
+            logger.debug(f"Actor {self.pin_name}: Prüfe Reset-Timer (value={value}, is_resetting={self._is_resetting}, reset_delay={self._reset_delay})")
             if value and not self._is_resetting and self._reset_delay > 0:
                 # Reset-Timer für den Fall, dass der Wert auf True gesetzt wird
                 # Bestehenden Timer abbrechen falls vorhanden
                 if self._reset_timer and self._reset_timer.is_alive():
+                    logger.debug(f"Actor {self.pin_name}: Breche bestehenden Reset-Timer ab")
                     self._reset_timer.cancel()
                 
-                logger.debug(f"Actor {self.pin_name}: Plane Reset in {self._reset_delay} Sekunden")
+                logger.debug(f"Actor {self.pin_name}: Starte neuen Reset-Timer für {self._reset_delay} Sekunden")
                 self._reset_timer = threading.Timer(self._reset_delay, self._reset_action)
                 self._reset_timer.daemon = True
                 self._reset_timer.start()
             elif not value:
                 # Bei Ausschalten eventuell laufenden Timer abbrechen
                 if self._reset_timer and self._reset_timer.is_alive():
-                    logger.debug(f"Actor {self.pin_name}: Breche geplanten Reset ab")
+                    logger.debug(f"Actor {self.pin_name}: Breche geplanten Reset ab wegen value=False")
                     self._reset_timer.cancel()
                     self._reset_timer = None
                 

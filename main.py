@@ -1,3 +1,6 @@
+# main.py
+# Version: 1.5.1
+
 import os
 import time
 import yaml
@@ -26,7 +29,8 @@ def setup_actors(controller, actor_config):
             reset_delay = 0.0
             entity_type = cfg.get('entity_type', 'switch').lower()
             
-            if entity_type == 'button' or (entity_type == 'switch' and cfg.get('auto_reset', False)):
+            # Erweiterte Bedingung für Reset-Delay
+            if entity_type == 'button' or ((entity_type in ['switch', 'lock']) and cfg.get('auto_reset', False)):
                 reset_delay = float(cfg.get('reset_delay', 0.0))
                 logger.debug(f"{entity_type.capitalize()} {name} mit Reset-Delay {reset_delay}s konfiguriert")
             

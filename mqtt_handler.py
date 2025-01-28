@@ -1,5 +1,5 @@
 # mqtt_handler.py
-# Version: 1.2.0
+# Version: 1.5.0
 
 import paho.mqtt.client as mqtt
 import json
@@ -8,6 +8,111 @@ import time
 import threading
 from .logging_config import logger
 from .mcp2221_patch import MCP2221Device
+
+class EntityTypeConfig:
+    """Konfigurationsklasse für Entity Types"""
+    TYPES = {
+        'switch': {
+            'discovery_type': 'switch',
+            'states': {
+                True: 'ON',
+                False: 'OFF'
+            },
+            'commands': {
+                'ON': True,
+                'OFF': False
+            },
+            'discovery_config': {
+                'state_topic': True,
+                'command_topic': True,
+                'payload_on': 'ON',
+                'payload_off': 'OFF',
+                'state_on': 'ON',
+                'state_off': 'OFF',
+                'optimistic': False
+            },
+            'startup_state_map': {
+                'on': True,
+                'off': False
+            }
+        },
+        'button': {
+            'discovery_type': 'button',
+            'states': {},  # Buttons haben keinen State
+            'commands': {
+                'ON': True,
+                'PRESS': True  # Alternative Command
+            },
+            'discovery_config': {
+                'command_topic': True,
+                'payload_press': 'ON'
+            },
+            'startup_state_map': {
+                'on': True,
+                'off': False
+            }
+        },
+        'lock': {
+            'discovery_type': 'lock',
+            'states': {
+                True: 'LOCKED',
+                False: 'UNLOCKED'
+            },
+            'commands': {
+                'LOCK': True,
+                'UNLOCK': False
+            },
+            'discovery_config': {
+                'state_topic': True,
+                'command_topic': True,
+                'payload_lock': 'LOCK',
+                'payload_unlock': 'UNLOCK',
+                'state_locked': 'LOCKED',
+                'state_unlocked': 'UNLOCKED',
+                'optimistic': False
+            },
+            'startup_state_map': {
+                'locked': True,
+                'unlocked': False
+            }
+        }
+    }
+
+    @classmethod
+    def get_config(cls, entity_type: str) -> dict:
+        """Gibt die Konfiguration für einen Entity Type zurück"""
+        return cls.TYPES.get(entity_type.lower(), cls.TYPES['switch'])
+
+    @classmethod
+    def convert_to_mqtt_state(cls, entity_type: str, internal_state: bool) -> str:
+        """Konvertiert einen internen State in einen MQTT State"""
+        config = cls.get_config(entity_type)
+        return config['states'].get(internal_state, 'OFF')
+
+    @classmethod
+    def convert_to_internal_state(cls, entity_type: str, mqtt_command: str) -> bool:
+        """Konvertiert einen MQTT Command in einen internen State"""
+        config = cls.get_config(entity_type)
+        return config['commands'].get(mqtt_command.upper(), False)
+
+    @classmethod
+    def convert_startup_state(cls, entity_type: str, startup_state: str) -> bool:
+        """Konvertiert einen Startup State String in einen internen Boolean State"""
+        config = cls.get_config(entity_type)
+        startup_state = startup_state.lower()
+        return config['startup_state_map'].get(startup_state, False)
+
+    @classmethod
+    def get_discovery_config(cls, entity_type: str) -> dict:
+        """Gibt die Discovery-Konfiguration für einen Entity Type zurück"""
+        config = cls.get_config(entity_type)
+        return config['discovery_config']
+
+    @classmethod
+    def get_discovery_type(cls, entity_type: str) -> str:
+        """Gibt den Discovery Type für einen Entity Type zurück"""
+        config = cls.get_config(entity_type)
+        return config['discovery_type']
 
 class MQTTHandler:
     def __init__(self, config: Dict):
@@ -36,7 +141,19 @@ class MQTTHandler:
         
         self.base_topic = config.get('base_topic', 'mcp2221')
         
-        # Set last will for device status, board status and debug messages
+        # Set last will for device status and board status
+        self._setup_last_will()
+        
+        if 'username' in config and 'password' in config:
+            self.mqtt_client.username_pw_set(config['username'], config['password'])
+            
+        self.ha_discovery_prefix = config.get('discovery_prefix', 'homeassistant')
+        self.device_name = config.get('device_name', 'MCP2221 IO Controller')
+        self.device_id = config.get('device_id', 'mcp2221_controller')
+        self.command_callbacks: Dict[str, Callable] = {}
+
+    def _setup_last_will(self):
+        """Richtet Last Will Topics ein"""
         self.mqtt_client.will_set(
             f"{self.base_topic}/status",
             "offline",
@@ -49,14 +166,18 @@ class MQTTHandler:
             qos=1,
             retain=True
         )
-        
-        if 'username' in config and 'password' in config:
-            self.mqtt_client.username_pw_set(config['username'], config['password'])
-            
-        self.ha_discovery_prefix = config.get('discovery_prefix', 'homeassistant')
-        self.device_name = config.get('device_name', 'MCP2221 IO Controller')
-        self.device_id = config.get('device_id', 'mcp2221_controller')
-        self.command_callbacks: Dict[str, Callable] = {}
+
+    def _convert_internal_to_state(self, actor_id: str, internal_state: bool) -> str:
+        """Konvertiert den internen Boolean-State in den entsprechenden MQTT-State"""
+        actor_config = self.config['actors'].get(actor_id, {})
+        entity_type = actor_config.get('entity_type', 'switch')
+        return EntityTypeConfig.convert_to_mqtt_state(entity_type, internal_state)
+
+    def _convert_command_to_internal(self, actor_id: str, command: str) -> bool:
+        """Konvertiert ein MQTT-Command in den internen Boolean-State"""
+        actor_config = self.config['actors'].get(actor_id, {})
+        entity_type = actor_config.get('entity_type', 'switch')
+        return EntityTypeConfig.convert_to_internal_state(entity_type, command)
 
     def start_board_monitoring(self):
         """Startet das Board-Monitoring"""
@@ -68,7 +189,6 @@ class MQTTHandler:
                     self._board_status_message = message
                     self.publish_board_status()
                     self.publish_debug_message(f"Board Status: {'Online' if status else 'Offline'} - {message}")
-                    # Update all actor availabilities when board status changes
                     self.publish_all_states()
                 time.sleep(10)
                 
@@ -106,35 +226,153 @@ class MQTTHandler:
 
     def publish_all_states(self):
         """Aktualisiert die States aller Aktoren"""
-        for actor_id in self.config['actors'].keys():
-            # Wenn das Board offline ist, setze auch alle Aktoren auf offline
-            if not self._board_status:
-                self.mqtt_client.publish(
-                    f"{self.base_topic}/{actor_id}/status",
-                    "offline",
-                    qos=1,
-                    retain=True
-                )
-                # Setze Aktoren-State auf OFF wenn Board offline
+        for actor_id, actor_config in self.config['actors'].items():
+            entity_type = actor_config.get('entity_type', 'switch')
+            discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
+            
+            # Status-Topic für alle Entities
+            self.mqtt_client.publish(
+                f"{self.base_topic}/{actor_id}/status",
+                "offline" if not self._board_status else "online",
+                qos=1,
+                retain=True
+            )
+            
+            # State-Topic nur für Entities mit State
+            if discovery_config.get('state_topic'):
                 self.mqtt_client.publish(
                     f"{self.base_topic}/{actor_id}/state",
-                    "OFF",
-                    qos=1,
-                    retain=True
-                )
-            else:
-                self.mqtt_client.publish(
-                    f"{self.base_topic}/{actor_id}/status",
-                    "online",
+                    self._convert_internal_to_state(actor_id, False),
                     qos=1,
                     retain=True
                 )
 
     def register_command_callback(self, actor_id: str, callback: Callable[[str, str], None]):
+        """Registriert einen Callback für Commands"""
         logger.debug(f"Registriere Command Callback für {actor_id}")
         self.command_callbacks[actor_id] = callback
 
+    def publish_discoveries(self):
+        """Veröffentlicht die Discovery-Konfigurationen"""
+        if not self.connected.is_set():
+            logger.error("MQTT nicht verbunden - Discovery nicht möglich")
+            return
+            
+        logger.debug("Starte Home Assistant Auto Discovery")
+        
+        # Board Status Discovery
+        self._publish_board_discovery()
+        
+        # Actor Discoveries
+        for actor_id, actor_config in self.config['actors'].items():
+            self._publish_actor_discovery(actor_id, actor_config)
+
+    def _publish_board_discovery(self):
+        """Veröffentlicht die Discovery-Konfiguration für das Board"""
+        config_topic = f"{self.ha_discovery_prefix}/binary_sensor/{self.device_id}/board_status/config"
+        payload = {
+            "name": f"{self.device_name} Board Status",
+            "unique_id": f"{self.device_id}_board_status",
+            "device": {
+                "identifiers": [f"mcp2221_{self.device_id}"],
+                "name": self.device_name,
+                "model": "MCP2221 IO Controller",
+                "manufacturer": "Custom",
+                "sw_version": "1.5.0"
+            },
+            "state_topic": f"{self.base_topic}/board_status/state",
+            "json_attributes_topic": f"{self.base_topic}/board_status/message",
+            "payload_on": "online",
+            "payload_off": "offline",
+            "device_class": "connectivity",
+            "availability": [{
+                "topic": f"{self.base_topic}/status",
+                "payload_available": "online",
+                "payload_not_available": "offline"
+            }]
+        }
+        
+        self.mqtt_client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
+
+    def _publish_actor_discovery(self, actor_id: str, actor_config: Dict):
+        """Veröffentlicht die Discovery-Konfiguration für einen Actor"""
+        entity_type = actor_config.get('entity_type', 'switch').lower()
+        discovery_type = EntityTypeConfig.get_discovery_type(entity_type)
+        discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
+        
+        config_topic = f"{self.ha_discovery_prefix}/{discovery_type}/{self.device_id}/{actor_id}/config"
+        
+        # Basis-Discovery-Konfiguration
+        payload = {
+            "name": actor_config['description'],
+            "unique_id": f"{self.device_id}_{actor_id}",
+            "device": {
+                "identifiers": [f"mcp2221_{self.device_id}"],
+                "name": self.device_name,
+                "model": "MCP2221 IO Controller",
+                "manufacturer": "Custom",
+                "sw_version": "1.5.0"
+            },
+            "availability": [
+                {
+                    "topic": f"{self.base_topic}/status",
+                    "payload_available": "online",
+                    "payload_not_available": "offline"
+                },
+                {
+                    "topic": f"{self.base_topic}/board_status/state",
+                    "payload_available": "online",
+                    "payload_not_available": "offline"
+                }
+            ]
+        }
+        
+        # Entity-spezifische Discovery-Konfiguration
+        if discovery_config.get('state_topic'):
+            payload["state_topic"] = f"{self.base_topic}/{actor_id}/state"
+        if discovery_config.get('command_topic'):
+            payload["command_topic"] = f"{self.base_topic}/{actor_id}/set"
+            
+        # Weitere Discovery-Konfiguration
+        payload.update({k: v for k, v in discovery_config.items() 
+                       if k not in ['state_topic', 'command_topic']})
+        
+        self.mqtt_client.publish(
+            config_topic,
+            json.dumps(payload),
+            qos=1,
+            retain=False
+        )
+
+    def connect(self):
+        """Verbindet mit dem MQTT Broker"""
+        try:
+            logger.debug(f"Verbinde mit MQTT Broker {self.config['broker']}:{self.config['port']}")
+            self.mqtt_client.connect(
+                self.config['broker'],
+                self.config['port'],
+                keepalive=self.config['timeouts'].get('keepalive', 60)
+            )
+            self.mqtt_client.loop_start()
+            
+            if not self.connected.wait(timeout=self.config['timeouts'].get('connect', 5.0)):
+                raise TimeoutError("Timeout beim Verbinden mit MQTT Broker")
+                
+            logger.debug("MQTT Verbindung hergestellt")
+            self.publish_debug_message("MQTT Verbindung hergestellt")
+            time.sleep(1)  # Kurze Pause für Stabilität
+            
+            # Discovery erst nach erfolgreicher Verbindung
+            self.publish_discoveries()
+            
+        except Exception as e:
+            error_msg = f"MQTT Verbindungsfehler: {e}"
+            logger.error(error_msg)
+            self.publish_debug_message(error_msg)
+            raise
+
     def _on_connect(self, client, userdata, flags, rc):
+        """Callback für erfolgreiche MQTT-Verbindung"""
         if rc == 0:
             logger.debug("MQTT Verbindung erfolgreich")
             self.connected.set()
@@ -144,28 +382,46 @@ class MQTTHandler:
             
             # Subscribe to topics
             topics = []
-            for actor_id in self.config['actors'].keys():
-                command_topic = f"{self.base_topic}/{actor_id}/set"
-                state_topic = f"{self.base_topic}/{actor_id}/state"
-                topics.extend([(command_topic, 1), (state_topic, 1)])
-                logger.debug(f"Abonniere {command_topic} und {state_topic}")
+            for actor_id, actor_config in self.config['actors'].items():
+                entity_type = actor_config.get('entity_type', 'switch')
+                discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
+                
+                # Command Topic für alle Entities
+                if discovery_config.get('command_topic'):
+                    command_topic = f"{self.base_topic}/{actor_id}/set"
+                    topics.append((command_topic, 1))
+                
+                # State Topic nur für Entities mit State
+                if discovery_config.get('state_topic'):
+                    state_topic = f"{self.base_topic}/{actor_id}/state"
+                    topics.append((state_topic, 1))
+                
+                logger.debug(f"Abonniere Topics für {actor_id}")
             
             if topics:
                 self.mqtt_client.subscribe(topics)
 
     def _restore_states(self):
+        """Stellt die letzten bekannten Zustände wieder her"""
         logger.debug("Stelle letzte bekannte Zustände wieder her...")
         self.publish_debug_message("Stelle Zustände wieder her...")
         restore_timeout = float(self.config['timeouts'].get('state_restore', 3.0))
-        pending_states = set(self.config['actors'].keys())
+        pending_states = {
+            actor_id: actor_config 
+            for actor_id, actor_config in self.config['actors'].items()
+            if EntityTypeConfig.get_discovery_config(
+                actor_config.get('entity_type', 'switch')
+            ).get('state_topic')
+        }
         
         def on_state_message(client, userdata, message):
             try:
                 actor_id = message.topic.split('/')[-2]
                 if actor_id in pending_states:
                     state_str = message.payload.decode().upper()
-                    self.restored_states[actor_id] = (state_str == "ON")
-                    pending_states.remove(actor_id)
+                    # Konvertiere MQTT State in internen State
+                    self.restored_states[actor_id] = self._convert_command_to_internal(actor_id, state_str)
+                    del pending_states[actor_id]
                     logger.debug(f"Wiederhergestellter State für {actor_id}: {state_str}")
                     self.publish_debug_message(f"State für {actor_id} wiederhergestellt: {state_str}")
                     
@@ -183,16 +439,22 @@ class MQTTHandler:
             if not self.restore_complete.wait(timeout=restore_timeout):
                 logger.warning("Timeout beim Wiederherstellen der States")
                 self.publish_debug_message("Timeout beim Wiederherstellen der States")
-                for actor_id in pending_states:
-                    startup_state = self.config['actors'][actor_id].get('startup_state', 'off')
-                    if startup_state in ['on', 'off']:
-                        self.restored_states[actor_id] = (startup_state == 'on')
-                        logger.debug(f"Default State für {actor_id}: {startup_state}")
-                        self.publish_debug_message(f"Default State für {actor_id}: {startup_state}")
+                for actor_id, actor_config in pending_states.items():
+                    entity_type = actor_config.get('entity_type', 'switch')
+                    startup_state = actor_config.get('startup_state', 'OFF')
+                    
+                    # Konvertiere startup_state in internen Boolean basierend auf Entity Type
+                    self.restored_states[actor_id] = EntityTypeConfig.convert_startup_state(
+                        entity_type, startup_state
+                    )
+                    
+                    logger.debug(f"Default State für {actor_id}: {startup_state}")
+                    self.publish_debug_message(f"Default State für {actor_id}: {startup_state}")
         finally:
             self.mqtt_client.on_message = original_on_message
 
     def _on_disconnect(self, client, userdata, rc):
+        """Callback für MQTT-Verbindungstrennung"""
         logger.debug(f"MQTT Verbindung getrennt mit Code {rc}")
         self.connected.clear()
         self.publish_debug_message(f"MQTT Verbindung getrennt mit Code {rc}")
@@ -205,6 +467,7 @@ class MQTTHandler:
         )
 
     def _on_message(self, client, userdata, message):
+        """Callback für eingehende MQTT-Nachrichten"""
         try:
             topic = message.topic
             payload = message.payload.decode()
@@ -229,9 +492,11 @@ class MQTTHandler:
             self.publish_debug_message(error_msg)
 
     def _on_publish(self, client, userdata, mid):
+        """Callback für erfolgreiche MQTT-Publizierung"""
         logger.debug(f"MQTT Nachricht {mid} erfolgreich veröffentlicht")
 
     def publish_state(self, actor_id: str, state: bool):
+        """Veröffentlicht den State eines Actors"""
         if not self.connected.is_set():
             msg = f"MQTT nicht verbunden - Status für {actor_id} kann nicht gesendet werden"
             logger.warning(msg)
@@ -244,7 +509,7 @@ class MQTTHandler:
             self.publish_debug_message(msg)
             return
             
-        state_str = "ON" if state else "OFF"
+        state_str = self._convert_internal_to_state(actor_id, state)
         topic = f"{self.base_topic}/{actor_id}/state"
         logger.debug(f"Publiziere State {state_str} für {actor_id}")
         try:
@@ -261,6 +526,7 @@ class MQTTHandler:
             self.publish_debug_message(error_msg)
 
     def publish_command(self, actor_id: str, command: str):
+        """Veröffentlicht ein Command für einen Actor"""
         if not self.connected.is_set():
             msg = f"MQTT nicht verbunden - Kommando für {actor_id} kann nicht gesendet werden"
             logger.warning(msg)
@@ -288,155 +554,26 @@ class MQTTHandler:
             logger.error(error_msg)
             self.publish_debug_message(error_msg)
 
-    def connect(self):
-        try:
-            logger.debug(f"Verbinde mit MQTT Broker {self.config['broker']}:{self.config['port']}")
-            self.mqtt_client.connect(
-                self.config['broker'],
-                self.config['port'],
-                keepalive=self.config['timeouts'].get('keepalive', 60)
-            )
-            self.mqtt_client.loop_start()
-            
-            if not self.connected.wait(timeout=self.config['timeouts'].get('connect', 5.0)):
-                error_msg = "Timeout beim Verbinden mit MQTT Broker"
-                logger.error(error_msg)
-                self.publish_debug_message(error_msg)
-                raise Exception(error_msg)
-                
-            logger.debug("MQTT Verbindung hergestellt")
-            self.publish_debug_message("MQTT Verbindung hergestellt")
-            time.sleep(1)
-            
-            self.publish_discoveries()
-            
-        except Exception as e:
-            error_msg = f"MQTT Verbindungsfehler: {e}"
-            logger.error(error_msg)
-            self.publish_debug_message(error_msg)
-            raise
-
-    def publish_discoveries(self):
-        if not self.connected.is_set():
-            logger.error("MQTT nicht verbunden - Discovery nicht möglich")
-            return
-            
-        logger.debug("Starte Home Assistant Auto Discovery")
-        
-        # Board Status Discovery
-        config_topic = f"{self.ha_discovery_prefix}/binary_sensor/{self.device_id}/board_status/config"
-        payload = {
-            "name": f"{self.device_name} Board Status",
-            "unique_id": f"{self.device_id}_board_status",
-            "device": {
-                "identifiers": [f"mcp2221_{self.device_id}"],
-                "name": self.device_name,
-                "model": "MCP2221 IO Controller",
-                "manufacturer": "Custom",
-                "sw_version": "1.0.0"
-            },
-            "state_topic": f"{self.base_topic}/board_status/state",
-            "json_attributes_topic": f"{self.base_topic}/board_status/message",
-            "payload_on": "online",
-            "payload_off": "offline",
-            "device_class": "connectivity",
-            "availability": [
-                {
-                    "topic": f"{self.base_topic}/status",
-                    "payload_available": "online",
-                    "payload_not_available": "offline"
-                }
-            ]
-        }
-        
-        self.mqtt_client.publish(
-            config_topic,
-            json.dumps(payload),
-            qos=1,
-            retain=True
-        )
-
-
-        
-        # Actor Discoveries
-        for actor_id, actor_config in self.config['actors'].items():
-            config_topic = f"{self.ha_discovery_prefix}/switch/{self.device_id}/{actor_id}/config"
-            entity_type = actor_config.get('entity_type', 'switch').lower()
-            
-            payload = {
-                "name": actor_config['description'],
-                "unique_id": f"{self.device_id}_{actor_id}",
-                "device": {
-                    "identifiers": [f"mcp2221_{self.device_id}"],
-                    "name": self.device_name,
-                    "model": "MCP2221 IO Controller",
-                    "manufacturer": "Custom",
-                    "sw_version": "1.0.0"
-                },
-                "availability": [
-                    {
-                        "topic": f"{self.base_topic}/status",
-                        "payload_available": "online",
-                        "payload_not_available": "offline"
-                    },
-                    {
-                        "topic": f"{self.base_topic}/board_status/state",
-                        "payload_available": "online",
-                        "payload_not_available": "offline"
-                    }
-                ],
-                "state_topic": f"{self.base_topic}/{actor_id}/state",
-                "command_topic": f"{self.base_topic}/{actor_id}/set",
-                "payload_on": "ON",
-                "payload_off": "OFF",
-                "state_on": "ON",
-                "state_off": "OFF",
-                "optimistic": False
-            }
-            
-            if entity_type == 'button':
-                config_topic = f"{self.ha_discovery_prefix}/button/{self.device_id}/{actor_id}/config"
-                payload.update({
-                    "payload_press": "ON",
-                    "press_action_topic": f"{self.base_topic}/{actor_id}/set"
-                })
-                payload.pop("state_topic", None)
-                payload.pop("state_on", None)
-                payload.pop("state_off", None)
-            
-            logger.debug(f"Sende Discovery für {actor_id} (Typ: {entity_type})")
-            result = self.mqtt_client.publish(
-                config_topic,
-                json.dumps(payload),
-                qos=1,
-                retain=True
-            )
-            
-            if result.is_published():
-                logger.debug(f"Discovery für {actor_id} erfolgreich gesendet")
-            else:
-                logger.warning(f"Timeout beim Senden der Discovery für {actor_id}")
-
     def get_startup_state(self, actor_id: str) -> bool:
+        """Ermittelt den Startup-State für einen Actor"""
         if actor_id not in self.config['actors']:
             logger.warning(f"Kein Config-Eintrag für {actor_id}")
             return False
             
-        startup_state = self.config['actors'][actor_id].get('startup_state', 'off')
+        actor_config = self.config['actors'][actor_id]
+        entity_type = actor_config.get('entity_type', 'switch')
+        startup_state = actor_config.get('startup_state', 'OFF')
         
-        if startup_state == 'restore':
-            if actor_id in self.restored_states:
-                state = self.restored_states[actor_id]
-                logger.debug(f"Wiederhergestellter State für {actor_id}: {state}")
-                return state
-            logger.debug(f"Kein State wiederhergestellt für {actor_id}, verwende 'off'")
-            return False
-        else:
-            state = (startup_state == 'on')
-            logger.debug(f"Konfigurierter State für {actor_id}: {state}")
+        if startup_state == 'restore' and actor_id in self.restored_states:
+            state = self.restored_states[actor_id]
+            logger.debug(f"Wiederhergestellter State für {actor_id}: {state}")
             return state
+            
+        # Konvertiere startup_state in internen Boolean
+        return EntityTypeConfig.convert_startup_state(entity_type, startup_state)
 
     def disconnect(self):
+        """Trennt die MQTT-Verbindung"""
         try:
             logger.debug("Sende Offline-Status...")
             
@@ -464,20 +601,24 @@ class MQTTHandler:
                 retain=True
             )
             
-            # Set all actors to offline
-            for actor_id in self.config['actors'].keys():
+            # Set all actors to offline and their states to off/unlocked
+            for actor_id, actor_config in self.config['actors'].items():
                 self.mqtt_client.publish(
                     f"{self.base_topic}/{actor_id}/status",
                     "offline",
                     qos=1,
                     retain=True
                 )
-                self.mqtt_client.publish(
-                    f"{self.base_topic}/{actor_id}/state",
-                    "OFF",
-                    qos=1,
-                    retain=True
-                )
+                
+                # Nur State setzen wenn Entity einen State hat
+                entity_type = actor_config.get('entity_type', 'switch')
+                if EntityTypeConfig.get_discovery_config(entity_type).get('state_topic'):
+                    self.mqtt_client.publish(
+                        f"{self.base_topic}/{actor_id}/state",
+                        self._convert_internal_to_state(actor_id, False),
+                        qos=1,
+                        retain=True
+                    )
             
             # Wait for messages to be sent
             time.sleep(self.config['timeouts'].get('disconnect', 0.5))
