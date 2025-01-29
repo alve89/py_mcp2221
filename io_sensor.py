@@ -1,5 +1,5 @@
 # io_sensor.py
-# Version: 1.6.3
+# Version: 1.6.4
 
 import board
 import digitalio
@@ -61,9 +61,17 @@ class Sensor(IODevice):
         last_state = None
         while not self._stop_polling.is_set():
             try:
-                # Hole aktuellen Zustand und wende Invertierung an
+                # Hole aktuellen Zustand
                 current_digital_state = self._digital_pin.value
+                
+                # Debug-Logging für den Raw-Zustand
+                logger.debug(f"Sensor {self._pin} raw digital state: {current_digital_state}")
+                
+                # Wende Invertierung an
                 current_state = not current_digital_state if self._inverted else current_digital_state
+                
+                # Debug-Logging für den invertierten Zustand
+                logger.debug(f"Sensor {self._pin} inverted state: {current_state}")
                 
                 # Auf State-Change prüfen
                 if last_state is None or current_state != last_state:

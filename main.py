@@ -1,11 +1,11 @@
 # main.py
-# Version: 1.5.1
+# Version: 1.5.2
 
 import os
 import time
 import yaml
 from .logging_config import logger
-from mcp2221_io import IOController, Actor, SimpleInputHandler
+from mcp2221_io import IOController, Actor, Sensor, SimpleInputHandler
 from mcp2221_io.mqtt_handler import MQTTHandler
 
 def load_config(config_path='config.yaml'):
@@ -45,6 +45,28 @@ def setup_actors(controller, actor_config):
             logger.error(f"Fehler beim Konfigurieren von Actor {name}: {e}")
             raise
 
+def setup_sensors(controller, sensor_config):
+    """Konfiguriert die Sensoren"""
+    if not sensor_config:
+        return
+        
+    logger.debug("Konfiguriere Sensoren")
+    for name, cfg in sensor_config.items():
+        try:
+            if cfg.get('sensor_type', '').upper() == 'GPIO':
+                sensor = Sensor(
+                    cfg['pin'],
+                    inverted=cfg.get('inverted', False),
+                    poll_interval=float(cfg.get('poll_interval', 0.1))
+                )
+                controller.add_sensor(name, sensor)
+                # Starte das Polling für den Sensor
+                sensor.start_polling()
+                logger.debug(f"Sensor {name} ({cfg['description']}) an Pin {cfg['pin']} konfiguriert und gestartet")
+        except Exception as e:
+            logger.error(f"Fehler beim Konfigurieren von Sensor {name}: {e}")
+            raise
+
 def setup_key_mappings(key_config):
     logger.debug("Konfiguriere Key-Mappings")
     mappings = {}
@@ -73,6 +95,16 @@ def reset_actors_to_default(controller, config, mqtt_handler=None):
         except Exception as e:
             logger.error(f"Fehler beim Zurücksetzen von {actor_id}: {e}")
 
+def stop_sensors(controller):
+    """Stoppt alle Sensoren"""
+    logger.debug("Stoppe Sensoren")
+    for name, sensor in controller.sensors.items():
+        try:
+            sensor.stop_polling()
+            logger.debug(f"Sensor {name} gestoppt")
+        except Exception as e:
+            logger.error(f"Fehler beim Stoppen von Sensor {name}: {e}")
+
 def main():
     logger.debug("Starte Hauptprogramm")
     config = load_config()
@@ -80,6 +112,7 @@ def main():
     logger.debug("Controller erstellt")
     
     setup_actors(controller, config['actors'])
+    setup_sensors(controller, config.get('sensors', {}))  # Neue Zeile
     key_mappings = setup_key_mappings(config['key_mappings'])
     
     mqtt_handler = None
@@ -125,6 +158,9 @@ def main():
         
         controller.stop()
         logger.debug("Input Handler gestoppt")
+        
+        # Stoppe die Sensoren
+        stop_sensors(controller)  # Neue Zeile
         
         reset_actors_to_default(controller, config, mqtt_handler)
         logger.debug("Aktoren zurückgesetzt")
