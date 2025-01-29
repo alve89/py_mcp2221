@@ -121,6 +121,7 @@ class MQTTHandler:
         self.connected = threading.Event()
         self.restored_states: Dict[str, bool] = {}
         self.restore_complete = threading.Event()
+        self._shutdown_flag = threading.Event()
         
         # Board Status
         self._board_status = False
@@ -153,13 +154,16 @@ class MQTTHandler:
         self.command_callbacks: Dict[str, Callable] = {}
 
     def _setup_last_will(self):
-        """Richtet Last Will Topics ein"""
+        """Konfiguriert Last Will and Testament"""
+        # LWT für Service-Status
         self.mqtt_client.will_set(
             f"{self.base_topic}/status",
             "offline",
             qos=1,
             retain=True
         )
+        
+        # LWT für Board-Status
         self.mqtt_client.will_set(
             f"{self.base_topic}/board_status/state",
             "offline",
@@ -182,16 +186,34 @@ class MQTTHandler:
     def start_board_monitoring(self):
         """Startet das Board-Monitoring"""
         def check_status():
-            while self.connected.is_set():
-                status, message = self._mcp_device.check_board_status()
-                if status != self._board_status or message != self._board_status_message:
+            while not self._shutdown_flag.is_set() and self.connected.is_set():
+                try:
+                    status, message = self._mcp_device.check_board_status()
+                    status_changed = (status != self._board_status or 
+                                    message != self._board_status_message)
+                    
                     self._board_status = status
                     self._board_status_message = message
-                    self.publish_board_status()
-                    self.publish_debug_message(f"Board Status: {'Online' if status else 'Offline'} - {message}")
-                    self.publish_all_states()
-                time.sleep(10)
-                
+                    
+                    if status_changed:
+                        logger.debug(f"Board Status geändert: {status} - {message}")
+                        self.publish_board_status()
+                        self.publish_debug_message(
+                            f"Board Status: {'Online' if status else 'Offline'} - {message}"
+                        )
+                        self.publish_all_states()
+                    
+                    # Regelmäßige Republizierung der States auch ohne Änderung
+                    else:
+                        self.publish_board_status()
+                        self.publish_all_states()
+                    
+                    time.sleep(10)
+                except Exception as e:
+                    logger.error(f"Fehler im Board-Monitoring: {e}")
+                    if not self._shutdown_flag.is_set():
+                        time.sleep(30)  # Längere Pause bei Fehler
+                        
         self._board_status_timer = threading.Thread(target=check_status, daemon=True)
         self._board_status_timer.start()
 
@@ -225,7 +247,16 @@ class MQTTHandler:
         self.mqtt_client.publish(topic, message, qos=1, retain=True)
 
     def publish_all_states(self):
-        """Aktualisiert die States aller Aktoren"""
+        """Aktualisiert die States aller Aktoren und Sensoren"""
+        # Service Status
+        self.mqtt_client.publish(
+            f"{self.base_topic}/status",
+            "online",
+            qos=1,
+            retain=True
+        )
+        
+        # Actors
         for actor_id, actor_config in self.config['actors'].items():
             entity_type = actor_config.get('entity_type', 'switch')
             discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
@@ -233,7 +264,7 @@ class MQTTHandler:
             # Status-Topic für alle Entities
             self.mqtt_client.publish(
                 f"{self.base_topic}/{actor_id}/status",
-                "offline" if not self._board_status else "online",
+                "online" if self._board_status else "offline",
                 qos=1,
                 retain=True
             )
@@ -247,6 +278,24 @@ class MQTTHandler:
                     retain=True
                 )
 
+        # Sensoren
+        if 'sensors' in self.config:
+            for sensor_id in self.config['sensors'].keys():
+                # Status-Topic für Sensoren
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{sensor_id}/status",
+                    "online" if self._board_status else "offline",
+                    qos=1,
+                    retain=True
+                )
+                # State-Topic für Sensoren (immer OFF bei Initialisierung)
+                self.mqtt_client.publish(
+                    f"{self.base_topic}/{sensor_id}/state",
+                    "OFF",
+                    qos=1,
+                    retain=True
+                )
+                
     def register_command_callback(self, actor_id: str, callback: Callable[[str, str], None]):
         """Registriert einen Callback für Commands"""
         logger.debug(f"Registriere Command Callback für {actor_id}")
@@ -357,12 +406,31 @@ class MQTTHandler:
             
             if not self.connected.wait(timeout=self.config['timeouts'].get('connect', 5.0)):
                 raise TimeoutError("Timeout beim Verbinden mit MQTT Broker")
-                
+            
+            # Sofortige Statusprüfung und -publikation
+            status, message = self._mcp_device.check_board_status()
+            self._board_status = status
+            self._board_status_message = message
+            
+            # Publiziere Service-Status
+            self.mqtt_client.publish(
+                f"{self.base_topic}/status",
+                "online",
+                qos=1,
+                retain=True
+            )
+            
+            # Publiziere Board-Status
+            self.publish_board_status()
+            
             logger.debug("MQTT Verbindung hergestellt")
             self.publish_debug_message("MQTT Verbindung hergestellt")
-            time.sleep(1)  # Kurze Pause für Stabilität
+            
+            # Publiziere alle States
+            self.publish_all_states()
             
             # Discovery erst nach erfolgreicher Verbindung
+            time.sleep(1)  # Kurze Pause für Stabilität
             self.publish_discoveries()
             
         except Exception as e:

@@ -1,5 +1,5 @@
 # io_control.py
-# Version: 1.5.1
+# Version: 1.6.2
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Callable
@@ -191,14 +191,14 @@ class IOController:
             
             # MQTT updaten
             if self.mqtt_handler:
-                # State Topic aktualisieren
+                # State Topic aktualisieren mit retain=True
                 self.mqtt_handler.mqtt_client.publish(
                     f"{self.mqtt_handler.base_topic}/{actor_id}/state",
                     command,
                     qos=1,
-                    retain=True
+                    retain=True  # Wichtig: retain=True für persistente States
                 )
-                logger.debug(f"MQTT State für {actor_id} auf {command} gesetzt")
+                logger.debug(f"MQTT State für {actor_id} auf {command} gesetzt (retained)")
                 
         elif entity_type == 'lock':
             # Analog zu switch: UNLOCK = ON (True)
@@ -209,15 +209,15 @@ class IOController:
             
             # MQTT updaten
             if self.mqtt_handler:
-                # State Topic aktualisieren
+                # State Topic aktualisieren mit retain=True
                 state = "UNLOCKED" if new_state else "LOCKED"
                 self.mqtt_handler.mqtt_client.publish(
                     f"{self.mqtt_handler.base_topic}/{actor_id}/state",
                     state,
                     qos=1,
-                    retain=True
+                    retain=True  # Wichtig: retain=True für persistente States
                 )
-                logger.debug(f"MQTT State für {actor_id} auf {state} gesetzt")
+                logger.debug(f"MQTT State für {actor_id} auf {state} gesetzt (retained)")
 
     def _handle_event(self, event: InputEvent):
         """Verarbeitet Events von Input Handlern"""
