@@ -1,12 +1,12 @@
 # main.py
-# Version: 1.5.2
+# Version: 1.6.0
 
 import os
 import time
 import yaml
 from .logging_config import logger
 from mcp2221_io import IOController, Actor, Sensor, SimpleInputHandler
-from mcp2221_io.mqtt_handler import MQTTHandler
+from .mqtt_handler import MQTTHandler  # Angepasster Import
 
 def load_config(config_path='config.yaml'):
     module_dir = os.path.dirname(os.path.abspath(__file__))
