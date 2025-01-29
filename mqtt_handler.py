@@ -525,14 +525,22 @@ class MQTTHandler:
         """Callback für MQTT-Verbindungstrennung"""
         logger.debug(f"MQTT Verbindung getrennt mit Code {rc}")
         self.connected.clear()
-        self.publish_debug_message(f"MQTT Verbindung getrennt mit Code {rc}")
-        # Ensure board status is set to offline on disconnect
-        self.mqtt_client.publish(
-            f"{self.base_topic}/board_status/state",
-            "offline",
-            qos=1,
-            retain=True
-        )
+        
+        # Keine weiteren MQTT-Operationen im Disconnect-Callback
+        # da die Verbindung bereits getrennt ist
+        
+        if not self._shutdown_flag.is_set():
+            # Nur Logging wenn es kein geplanter Shutdown ist
+            logger.warning(f"Unerwartete MQTT-Trennung mit Code {rc}")
+            if rc == 0:
+                logger.debug("Normale Trennung")
+            elif rc == 1:
+                logger.warning("Nicht autorisiert")
+            else:
+                logger.error(f"Verbindungsfehler: {rc}")
+                
+        # Signal für wartende Threads
+        self._shutdown_flag.set()
 
     def _on_message(self, client, userdata, message):
         """Callback für eingehende MQTT-Nachrichten"""
@@ -561,7 +569,7 @@ class MQTTHandler:
 
     def _on_publish(self, client, userdata, mid):
         """Callback für erfolgreiche MQTT-Publizierung"""
-        logger.debug(f"MQTT Nachricht {mid} erfolgreich veröffentlicht")
+        # logger.debug(f"MQTT Nachricht {mid} erfolgreich veröffentlicht")
 
     def publish_state(self, actor_id: str, state: bool):
         """Veröffentlicht den State eines Actors"""
@@ -643,75 +651,71 @@ class MQTTHandler:
     def disconnect(self):
         """Trennt die MQTT-Verbindung"""
         try:
+            # Signal zum Beenden aller Threads
             logger.debug("Beginne MQTT-Disconnect-Prozess...")
-            self._shutdown_flag.set()  # Signal zum Beenden aller Threads
+            self._shutdown_flag.set()
             
+            # 1. Board Status Timer beenden
             if self._board_status_timer and self._board_status_timer.is_alive():
                 logger.debug("Warte auf Beendigung des Board-Status-Timers...")
                 self._board_status_timer.join(timeout=2.0)
+                if self._board_status_timer.is_alive():
+                    logger.warning("Board-Status-Timer konnte nicht beendet werden")
             
-            logger.debug("Sende Offline-Status...")
-            
-            # Sende Offline-Nachrichten mit kurzer Verzögerung
-            def publish_with_wait(topic, payload):
+            # 2. Offline-Status senden, wenn noch verbunden
+            if self.connected.is_set():
+                logger.debug("Sende Offline-Status...")
                 try:
-                    self.mqtt_client.publish(topic, payload, qos=1, retain=True)
-                    time.sleep(0.1)  # Kurze Pause zwischen den Nachrichten
+                    # Versuche schnell alle Offline-States zu senden
+                    # Board-Status
+                    self.mqtt_client.publish(f"{self.base_topic}/board_status/state", "offline", qos=0, retain=True)
+                    
+                    # Aktoren
+                    for actor_id in self.config['actors'].keys():
+                        self.mqtt_client.publish(f"{self.base_topic}/{actor_id}/status", "offline", qos=0, retain=True)
+                    
+                    # Sensoren
+                    if 'sensors' in self.config:
+                        for sensor_id in self.config['sensors'].keys():
+                            self.mqtt_client.publish(f"{self.base_topic}/{sensor_id}/status", "offline", qos=0, retain=True)
+                    
+                    # Device-Status als letztes
+                    self.mqtt_client.publish(f"{self.base_topic}/status", "offline", qos=0, retain=True)
+                    
                 except Exception as e:
-                    logger.error(f"Fehler beim Publizieren von {topic}: {e}")
+                    logger.error(f"Fehler beim Senden der Offline-Status: {e}")
             
-            # Debug-Nachricht
-            publish_with_wait(f"{self.base_topic}/debug", "System wird heruntergefahren")
-            
-            # Board-Status
-            publish_with_wait(f"{self.base_topic}/board_status/state", "offline")
-            
-            # Setze alle Aktoren und Sensoren auf offline
-            for actor_id, actor_config in self.config['actors'].items():
-                publish_with_wait(f"{self.base_topic}/{actor_id}/status", "offline")
-                
-                entity_type = actor_config.get('entity_type', 'switch')
-                if EntityTypeConfig.get_discovery_config(entity_type).get('state_topic'):
-                    publish_with_wait(
-                        f"{self.base_topic}/{actor_id}/state",
-                        self._convert_internal_to_state(actor_id, False)
-                    )
-            
-            # Sensoren auf offline setzen
-            if 'sensors' in self.config:
-                for sensor_id in self.config['sensors'].keys():
-                    publish_with_wait(f"{self.base_topic}/{sensor_id}/status", "offline")
-                    publish_with_wait(f"{self.base_topic}/{sensor_id}/state", "OFF")
-            
-            # Device-Status als letztes
-            publish_with_wait(f"{self.base_topic}/status", "offline")
-            
-            # Warte kurz, damit die letzten Nachrichten gesendet werden können
-            time.sleep(self.config['timeouts'].get('disconnect', 0.5))
-            
-            logger.debug("Stoppe MQTT Client...")
+            # 3. MQTT-Client beenden
+            logger.debug("Beende MQTT-Client...")
             try:
-                # Stoppe den Network-Loop
-                self.mqtt_client.loop_stop()
+                # Erst loop_stop mit Timeout - dies ist wichtig!
+                loop_stop_timeout = 1.0
+                if not self.mqtt_client.loop_stop(timeout=loop_stop_timeout):
+                    logger.warning("MQTT Loop konnte nicht normal gestoppt werden")
                 
-                # Trennen mit Timeout
-                disconnect_timeout = 2.0
+                # Dann disconnect mit Timeout
+                disconnect_timeout = 1.0
                 self.mqtt_client.disconnect()
                 
-                disconnect_time = time.time()
-                while self.connected.is_set() and (time.time() - disconnect_time) < disconnect_timeout:
+                disconnect_start = time.time()
+                while self.connected.is_set() and (time.time() - disconnect_start) < disconnect_timeout:
                     time.sleep(0.1)
                 
-                # Wenn immer noch verbunden, forciere Beendigung
+                # Wenn nach Timeouts immer noch verbunden, forciere Beendigung
                 if self.connected.is_set():
-                    logger.warning("Forciere MQTT-Disconnect nach Timeout")
-                    
+                    logger.warning("Forciere MQTT-Disconnect")
+                    self.connected.clear()
+                
             except Exception as e:
-                logger.error(f"Fehler beim Stoppen des MQTT-Clients: {e}")
+                logger.error(f"Fehler beim Beenden des MQTT-Clients: {e}")
+                # Stelle sicher dass connected auf jeden Fall zurückgesetzt wird
+                self.connected.clear()
             
-            logger.debug("MQTT-Verbindung getrennt")
+            logger.debug("MQTT-Client erfolgreich beendet")
             
         except Exception as e:
-            logger.error(f"Fehler beim Trennen der MQTT-Verbindung: {e}")
+            logger.error(f"Fehler im Disconnect-Prozess: {e}")
         finally:
+            # Finale Cleanup
             self.connected.clear()
+            self._shutdown_flag.set()
