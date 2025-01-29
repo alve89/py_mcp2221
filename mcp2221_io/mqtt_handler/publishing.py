@@ -1,8 +1,8 @@
 # mqtt_handler/publishing.py
-# Version: 1.1.0
+# Version: 1.1.1
 
 import paho.mqtt.client as mqtt
-from ..logging_config import logger
+from mcp2221_io.logging_config import logger
 
 class MQTTPublishingMixin:
     """Mixin-Klasse für MQTT Publishing Funktionalität"""
@@ -27,7 +27,8 @@ class MQTTPublishingMixin:
         
         try:
             result = self.mqtt_client.publish(topic, state_str, qos=1, retain=True)
-            self.debug_send_msg(topic, state_str, retained=True, qos=1)
+            if self.debug_send:  # Prüfung der Debug-Konfiguration
+                self.debug_send_msg(topic, state_str, retained=True, qos=1)
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 self.debug_process_msg(f"State für {actor_id} erfolgreich publiziert")
@@ -59,7 +60,8 @@ class MQTTPublishingMixin:
         
         try:
             result = self.mqtt_client.publish(topic, command, qos=1)
-            self.debug_send_msg(topic, command, qos=1)
+            if self.debug_send:  # Prüfung der Debug-Konfiguration
+                self.debug_send_msg(topic, command, qos=1)
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 self.debug_process_msg(f"Kommando für {actor_id} erfolgreich publiziert")
@@ -80,6 +82,7 @@ class MQTTPublishingMixin:
         topic = f"{self.base_topic}/debug"
         try:
             self.mqtt_client.publish(topic, message, qos=1, retain=True)
-            self.debug_send_msg(topic, message, retained=True, qos=1)
+            if self.debug_send:  # Prüfung der Debug-Konfiguration
+                self.debug_send_msg(topic, message, retained=True, qos=1)
         except Exception as e:
             self.debug_error(f"Fehler beim Publizieren der Debug-Nachricht: {e}", e)

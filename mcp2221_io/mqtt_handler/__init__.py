@@ -1,5 +1,5 @@
 # mqtt_handler/__init__.py
-# Version: 1.1.0
+# Version: 1.1.1
 
 from .base import MQTTHandler
 from .callbacks import MQTTCallbacksMixin
@@ -15,6 +15,13 @@ class MQTTHandler(MQTTHandler,
                  MQTTPublishingMixin,
                  MQTTStatesMixin):
     """MQTT Handler Hauptklasse mit allen Mixins"""
-    pass
+    
+    def __init__(self, config: dict):
+        """Initialisiert den MQTT Handler"""
+        # Debug-Konfiguration zuerst initialisieren
+        self._init_debug_config(config)
+        
+        # Basis-Handler initialisieren
+        super().__init__(config)
 
 __all__ = ['MQTTHandler']

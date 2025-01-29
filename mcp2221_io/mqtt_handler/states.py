@@ -1,11 +1,11 @@
 # mqtt_handler/states.py
-# Version: 1.1.0
+# Version: 1.1.1
 
 import threading
 import time
 from typing import Dict
-from ..logging_config import logger
-from ..mqtt_config import EntityTypeConfig
+from mcp2221_io.logging_config import logger
+from mcp2221_io.mqtt_config import EntityTypeConfig
 
 class MQTTStatesMixin:
     """Mixin-Klasse für MQTT State Management"""
@@ -61,7 +61,6 @@ class MQTTStatesMixin:
             qos=1,
             retain=True
         )
-        self.debug_send_msg(status_topic, status_str, retained=True, qos=1)
         
         self.mqtt_client.publish(
             message_topic,
@@ -69,7 +68,6 @@ class MQTTStatesMixin:
             qos=1,
             retain=True
         )
-        self.debug_send_msg(message_topic, self._board_status_message, retained=True, qos=1)
 
     def publish_all_states(self):
         """Aktualisiert die States aller Aktoren und Sensoren"""
@@ -81,12 +79,12 @@ class MQTTStatesMixin:
             qos=1,
             retain=True
         )
-        self.debug_send_msg(service_topic, "online", retained=True, qos=1)
         
         # Actors
         for actor_id, actor_config in self.config['actors'].items():
             entity_type = actor_config.get('entity_type', 'switch')
             discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
+            startup_state = actor_config.get('startup_state', 'off').upper()
             
             # Status-Topic für alle Entities
             status_topic = f"{self.base_topic}/{actor_id}/status"
@@ -97,19 +95,23 @@ class MQTTStatesMixin:
                 qos=1,
                 retain=True
             )
-            self.debug_send_msg(status_topic, status_str, retained=True, qos=1)
             
             # State-Topic nur für Entities mit State
             if discovery_config.get('state_topic'):
                 state_topic = f"{self.base_topic}/{actor_id}/state"
-                state_str = self._convert_internal_to_state(actor_id, False)
+                
+                # Spezialbehandlung für Locks: Immer mit konfiguriertem Startup-State initialisieren
+                if entity_type.lower() == 'lock':
+                    state_str = startup_state if startup_state in ['LOCKED', 'UNLOCKED'] else 'LOCKED'
+                else:
+                    state_str = self._convert_internal_to_state(actor_id, False)
+                
                 self.mqtt_client.publish(
                     state_topic,
                     state_str,
                     qos=1,
                     retain=True
                 )
-                self.debug_send_msg(state_topic, state_str, retained=True, qos=1)
 
         # Sensoren
         if 'sensors' in self.config:
@@ -123,7 +125,6 @@ class MQTTStatesMixin:
                     qos=1,
                     retain=True
                 )
-                self.debug_send_msg(sensor_status_topic, status_str, retained=True, qos=1)
                 
                 # State-Topic für Sensoren (immer OFF bei Initialisierung)
                 sensor_state_topic = f"{self.base_topic}/{sensor_id}/state"
@@ -133,7 +134,6 @@ class MQTTStatesMixin:
                     qos=1,
                     retain=True
                 )
-                self.debug_send_msg(sensor_state_topic, "OFF", retained=True, qos=1)
 
     def _restore_states(self):
         """Stellt die letzten bekannten Zustände wieder her"""
@@ -153,9 +153,10 @@ class MQTTStatesMixin:
                 actor_id = message.topic.split('/')[-2]
                 if actor_id in pending_states:
                     state_str = message.payload.decode().upper()
-                    # Konvertiere MQTT State in internen State
-                    self.restored_states[actor_id] = self._convert_command_to_internal(actor_id, state_str)
-                    del pending_states[actor_id]
+                    # Für Locks keine Wiederherstellung durchführen
+                    if pending_states[actor_id].get('entity_type', '').lower() != 'lock':
+                        self.restored_states[actor_id] = self._convert_command_to_internal(actor_id, state_str)
+                        del pending_states[actor_id]
                     
                     self.debug_process_msg(f"Wiederhergestellter State für {actor_id}: {state_str}")
                     self.publish_debug_message(f"State für {actor_id} wiederhergestellt: {state_str}")
@@ -198,6 +199,10 @@ class MQTTStatesMixin:
         entity_type = actor_config.get('entity_type', 'switch')
         startup_state = actor_config.get('startup_state', 'OFF')
         
+        # Für Locks keine Wiederherstellung, immer startup_state verwenden
+        if entity_type.lower() == 'lock':
+            return EntityTypeConfig.convert_startup_state(entity_type, startup_state)
+            
         if startup_state == 'restore' and actor_id in self.restored_states:
             state = self.restored_states[actor_id]
             self.debug_process_msg(f"Wiederhergestellter State für {actor_id}: {state}")

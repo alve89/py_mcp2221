@@ -5,17 +5,14 @@ import paho.mqtt.client as mqtt
 import threading
 import time
 from typing import Dict, Optional, Callable
-from ..logging_config import logger
-from ..mcp2221_patch import MCP2221Device
-from ..mqtt_config import EntityTypeConfig
+from mcp2221_io.logging_config import logger
+from mcp2221_io.mcp2221_patch import MCP2221Device
+from mcp2221_io.mqtt_config import EntityTypeConfig
 
 class MQTTHandler:
     def __init__(self, config: Dict):
         """Initialisiert den MQTT Handler"""
         self.config = config
-        
-        # Debug-Konfiguration initialisieren
-        self._init_debug_config(config)
         
         self.mqtt_client = mqtt.Client()
         self.connected = threading.Event()
@@ -52,8 +49,6 @@ class MQTTHandler:
         self.device_name = config.get('device_name', 'MCP2221 IO Controller')
         self.device_id = config.get('device_id', 'mcp2221_controller')
         self.command_callbacks: Dict[str, Callable] = {}
-        
-        self.debug_process_msg("MQTT Handler initialisiert")
 
     def _setup_last_will(self):
         """Konfiguriert Last Will and Testament"""
@@ -64,7 +59,6 @@ class MQTTHandler:
             qos=1,
             retain=True
         )
-        self.debug_process_msg("Service-Status LWT konfiguriert")
         
         # LWT für Board-Status
         self.mqtt_client.will_set(
@@ -73,24 +67,10 @@ class MQTTHandler:
             qos=1,
             retain=True
         )
-        self.debug_process_msg("Board-Status LWT konfiguriert")
-
-    def _convert_internal_to_state(self, actor_id: str, internal_state: bool) -> str:
-        """Konvertiert den internen Boolean-State in den entsprechenden MQTT-State"""
-        actor_config = self.config['actors'].get(actor_id, {})
-        entity_type = actor_config.get('entity_type', 'switch')
-        return EntityTypeConfig.convert_to_mqtt_state(entity_type, internal_state)
-
-    def _convert_command_to_internal(self, actor_id: str, command: str) -> bool:
-        """Konvertiert ein MQTT-Command in den internen Boolean-State"""
-        actor_config = self.config['actors'].get(actor_id, {})
-        entity_type = actor_config.get('entity_type', 'switch')
-        return EntityTypeConfig.convert_to_internal_state(entity_type, command)
 
     def connect(self):
         """Verbindet mit dem MQTT Broker"""
         try:
-            self.debug_process_msg(f"Verbinde mit MQTT Broker {self.config['broker']}:{self.config['port']}")
             self.mqtt_client.connect(
                 self.config['broker'],
                 self.config['port'],
@@ -99,7 +79,6 @@ class MQTTHandler:
             self.mqtt_client.loop_start()
             
             if not self.connected.wait(timeout=self.config['timeouts'].get('connect', 5.0)):
-                self.debug_error("Timeout beim Verbinden mit MQTT Broker")
                 raise TimeoutError("Timeout beim Verbinden mit MQTT Broker")
             
             # Status-Aktualisierung
@@ -114,12 +93,8 @@ class MQTTHandler:
                 qos=1,
                 retain=True
             )
-            self.debug_send_msg(f"{self.base_topic}/status", "online", retained=True, qos=1)
             
             self.publish_board_status()
-            self.debug_process_msg("MQTT Verbindung hergestellt")
-            self.publish_debug_message("MQTT Verbindung hergestellt")
-            
             self.publish_all_states()
             
             # Discovery
@@ -129,61 +104,65 @@ class MQTTHandler:
             
         except Exception as e:
             error_msg = f"MQTT Verbindungsfehler: {e}"
-            self.debug_error(error_msg, e)
-            self.publish_debug_message(error_msg)
             raise
 
     def disconnect(self):
         """Trennt die Verbindung zum MQTT Broker"""
         try:
-            # Signal an alle Threads zum Beenden
+            # Setze Shutdown-Flag für alle Threads
             self._shutdown_flag.set()
             
-            # Status auf offline setzen
             if self.connected.is_set():
                 try:
+                    # Publiziere Offline-Status
                     self.mqtt_client.publish(
                         f"{self.base_topic}/status",
                         "offline",
-                        qos=1,
+                        qos=0,  # Niedrige QoS für schnelles Beenden
                         retain=True
                     )
                     self.mqtt_client.publish(
                         f"{self.base_topic}/board_status/state",
                         "offline",
-                        qos=1,
+                        qos=0,  # Niedrige QoS für schnelles Beenden
                         retain=True
                     )
                 except:
-                    pass  # Ignoriere Fehler beim finalen Publish
-            
-            # Warte kurz auf ausstehende Publishes
-            timeout = self.config['timeouts'].get('disconnect', 0.5)
-            disconnect_start = time.time()
-            
-            # Versuche graceful disconnect mit Timeout
-            try:
+                    pass
+                
+                # Sofort die Verbindung trennen
                 self.mqtt_client.disconnect()
-                time_left = max(0, timeout - (time.time() - disconnect_start))
-                if time_left > 0:
-                    time.sleep(time_left)
-            except:
-                pass  # Ignoriere Fehler beim Disconnect
+                self.connected.clear()
+                
+                # Loop in separatem Thread stoppen
+                def stop_loop():
+                    try:
+                        self.mqtt_client.loop_stop()
+                    except:
+                        pass
+                
+                stop_thread = threading.Thread(target=stop_loop)
+                stop_thread.daemon = True
+                stop_thread.start()
+                stop_thread.join(timeout=1.0)  # Maximal 1 Sekunde warten
             
-            # Force Stop des Loop nach Timeout
-            try:
-                self.mqtt_client.loop_stop(force=True)
-            except:
-                pass  # Ignoriere Fehler beim Loop Stop
-            
-            # Cleanup
-            self.connected.clear()
-            self.debug_process_msg("MQTT Verbindung getrennt")
-            
+            # Board-Monitoring-Thread beenden
+            if self._board_status_timer and self._board_status_timer.is_alive():
+                self._board_status_timer.join(timeout=1.0)
+                
         except Exception as e:
-            self.debug_error(f"Fehler beim Trennen der MQTT Verbindung: {e}")
-            # Stelle sicher, dass der Loop gestoppt wird
-            try:
-                self.mqtt_client.loop_stop(force=True)
-            except:
-                pass
+            logger.error(f"Fehler beim Disconnect: {e}")
+        finally:
+            self.connected.clear()
+
+    def _convert_internal_to_state(self, actor_id: str, internal_state: bool) -> str:
+        """Konvertiert den internen Boolean-State in den entsprechenden MQTT-State"""
+        actor_config = self.config['actors'].get(actor_id, {})
+        entity_type = actor_config.get('entity_type', 'switch')
+        return EntityTypeConfig.convert_to_mqtt_state(entity_type, internal_state)
+
+    def _convert_command_to_internal(self, actor_id: str, command: str) -> bool:
+        """Konvertiert ein MQTT-Command in den internen Boolean-State"""
+        actor_config = self.config['actors'].get(actor_id, {})
+        entity_type = actor_config.get('entity_type', 'switch')
+        return EntityTypeConfig.convert_to_internal_state(entity_type, command)

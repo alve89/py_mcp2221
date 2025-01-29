@@ -1,7 +1,7 @@
 # mqtt_handler/debug.py
-# Version: 1.0.0
+# Version: 1.0.1
 
-from ..logging_config import logger
+from mcp2221_io.logging_config import logger
 from typing import Dict, Optional, Any
 
 class MQTTDebugMixin:
@@ -9,18 +9,20 @@ class MQTTDebugMixin:
     
     def _init_debug_config(self, config: Dict):
         """Initialisiert die Debug-Konfiguration"""
+        logger.debug(f"MQTT Debug Konfiguration: {config.get('debugging', {}).get('mqtt', {})}")
         self.debug_config = config.get('debugging', {}).get('mqtt', {})
-        self.debug_process = self.debug_config.get('process', False)
-        self.debug_send = self.debug_config.get('send', False)
-        self.debug_receive = self.debug_config.get('receive', False)
+        self.debug_process = bool(self.debug_config.get('process', False))
+        self.debug_send = bool(self.debug_config.get('send', False))
+        self.debug_receive = bool(self.debug_config.get('receive', False))
+        logger.debug(f"MQTT Debug Flags: process={self.debug_process}, send={self.debug_send}, receive={self.debug_receive}")
     
     def debug_process_msg(self, message: str, error: bool = False):
         """Debug-Ausgabe für Prozess-Informationen"""
         if self.debug_process:
             if error:
                 logger.error(f"[MQTT Process] {message}")
-            else:
-                logger.debug(f"[MQTT Process] {message}")
+            # else:
+                # logger.debug(f"[MQTT Process] {message}")
 
     def debug_send_msg(self, topic: str, payload: Any, retained: bool = False, qos: int = 0):
         """Debug-Ausgabe für gesendete MQTT-Nachrichten"""

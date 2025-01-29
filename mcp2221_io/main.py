@@ -1,5 +1,5 @@
 # main.py
-# Version: 1.5.5
+# Version: 1.5.6
 
 import os
 import time
@@ -37,15 +37,21 @@ def load_config(config_path='config.yaml'):
         with open(config_file, 'r') as file:
             config = yaml.safe_load(file)
             if 'mqtt' in config:
-                config['mqtt']['actors'] = config['actors']
+                mqtt_config = config['mqtt']
+                mqtt_config['actors'] = config['actors']
                 if 'sensors' in config:
-                    config['mqtt']['sensors'] = config['sensors']
+                    mqtt_config['sensors'] = config['sensors']
+                # Debug-Konfiguration hinzufügen
+                if 'debugging' in config:
+                    mqtt_config['debugging'] = config['debugging']
+                config['mqtt'] = mqtt_config
             return config
     except Exception as e:
         logger.error(f"Fehler beim Laden der Konfiguration: {e}")
         raise
 
 def setup_actors(controller, actor_config):
+    """Konfiguriert die Aktoren"""
     logger.debug("Konfiguriere Aktoren")
     for name, cfg in actor_config.items():
         try:
@@ -91,6 +97,7 @@ def setup_sensors(controller, sensor_config):
             raise
 
 def setup_key_mappings(key_config):
+    """Konfiguriert die Key-Mappings"""
     logger.debug("Konfiguriere Key-Mappings")
     mappings = {}
     for key, cfg in key_config.items():
@@ -99,6 +106,7 @@ def setup_key_mappings(key_config):
     return mappings
 
 def reset_actors_to_default(controller, config, mqtt_handler=None):
+    """Setzt die Aktoren auf ihre Standardwerte zurück"""
     logger.debug("Setze Aktoren auf Standardwerte zurück")
     
     for actor_id, actor_config in config['actors'].items():
