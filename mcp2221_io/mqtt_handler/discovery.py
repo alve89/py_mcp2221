@@ -1,5 +1,5 @@
 # mqtt_handler/discovery.py
-# Version: 1.0.0
+# Version: 1.1.0
 
 import json
 from typing import Dict
@@ -12,10 +12,10 @@ class MQTTDiscoveryMixin:
     def publish_discoveries(self):
         """Veröffentlicht die Discovery-Konfigurationen"""
         if not self.connected.is_set():
-            logger.error("MQTT nicht verbunden - Discovery nicht möglich")
+            self.debug_error("MQTT nicht verbunden - Discovery nicht möglich")
             return
             
-        logger.debug("Starte Home Assistant Auto Discovery")
+        self.debug_process_msg("Starte Home Assistant Auto Discovery")
         
         # Board Status Discovery
         self._publish_board_discovery()
@@ -23,6 +23,8 @@ class MQTTDiscoveryMixin:
         # Actor Discoveries
         for actor_id, actor_config in self.config['actors'].items():
             self._publish_actor_discovery(actor_id, actor_config)
+            
+        self.debug_process_msg("Home Assistant Auto Discovery abgeschlossen")
 
     def _publish_board_discovery(self):
         """Veröffentlicht die Discovery-Konfiguration für das Board"""
@@ -50,6 +52,8 @@ class MQTTDiscoveryMixin:
         }
         
         self.mqtt_client.publish(config_topic, json.dumps(payload), qos=1, retain=False)
+        self.debug_process_msg("Board Discovery-Konfiguration veröffentlicht")
+        self.debug_send_msg(config_topic, json.dumps(payload), qos=1)
 
     def _publish_actor_discovery(self, actor_id: str, actor_config: Dict):
         """Veröffentlicht die Discovery-Konfiguration für einen Actor"""
@@ -100,3 +104,5 @@ class MQTTDiscoveryMixin:
             qos=1,
             retain=False
         )
+        self.debug_process_msg(f"Discovery-Konfiguration für Actor {actor_id} veröffentlicht")
+        self.debug_send_msg(config_topic, json.dumps(payload), qos=1)

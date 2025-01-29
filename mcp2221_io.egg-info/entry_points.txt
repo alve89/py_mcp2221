@@ -1,0 +1,3 @@
+[console_scripts]
+mcp2221-controller = mcp2221_io.main:main
+

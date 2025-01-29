@@ -1,0 +1,22 @@
+Metadata-Version: 2.1
+Name: mcp2221-io
+Version: 1.6.3
+Summary: MCP2221 IO Controller with MQTT Support
+Home-page: https://github.com/yourusername/mcp2221_io
+Author: Your Name
+Author-email: your.email@example.com
+License: UNKNOWN
+Description: # Using a MCP2221 breakout board with Home Assistant
+        
+Keywords: mcp2221,gpio,mqtt,home-assistant
+Platform: UNKNOWN
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown

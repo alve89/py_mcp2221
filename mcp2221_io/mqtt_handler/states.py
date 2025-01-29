@@ -1,5 +1,5 @@
 # mqtt_handler/states.py
-# Version: 1.0.0
+# Version: 1.1.0
 
 import threading
 import time
@@ -23,7 +23,7 @@ class MQTTStatesMixin:
                     self._board_status_message = message
                     
                     if status_changed:
-                        logger.debug(f"Board Status geändert: {status} - {message}")
+                        self.debug_process_msg(f"Board Status geändert: {status} - {message}")
                         self.publish_board_status()
                         self.publish_debug_message(
                             f"Board Status: {'Online' if status else 'Offline'} - {message}"
@@ -37,12 +37,13 @@ class MQTTStatesMixin:
                     
                     time.sleep(10)
                 except Exception as e:
-                    logger.error(f"Fehler im Board-Monitoring: {e}")
+                    self.debug_error(f"Fehler im Board-Monitoring: {e}", e)
                     if not self._shutdown_flag.is_set():
                         time.sleep(30)  # Längere Pause bei Fehler
                         
         self._board_status_timer = threading.Thread(target=check_status, daemon=True)
         self._board_status_timer.start()
+        self.debug_process_msg("Board-Monitoring Thread gestartet")
 
     def publish_board_status(self):
         """Veröffentlicht den Board-Status via MQTT"""
@@ -52,28 +53,35 @@ class MQTTStatesMixin:
         status_topic = f"{self.base_topic}/board_status/state"
         message_topic = f"{self.base_topic}/board_status/message"
         
+        status_str = "online" if self._board_status else "offline"
+        
         self.mqtt_client.publish(
             status_topic,
-            "online" if self._board_status else "offline",
+            status_str,
             qos=1,
             retain=True
         )
+        self.debug_send_msg(status_topic, status_str, retained=True, qos=1)
+        
         self.mqtt_client.publish(
             message_topic,
             self._board_status_message,
             qos=1,
             retain=True
         )
+        self.debug_send_msg(message_topic, self._board_status_message, retained=True, qos=1)
 
     def publish_all_states(self):
         """Aktualisiert die States aller Aktoren und Sensoren"""
         # Service Status
+        service_topic = f"{self.base_topic}/status"
         self.mqtt_client.publish(
-            f"{self.base_topic}/status",
+            service_topic,
             "online",
             qos=1,
             retain=True
         )
+        self.debug_send_msg(service_topic, "online", retained=True, qos=1)
         
         # Actors
         for actor_id, actor_config in self.config['actors'].items():
@@ -81,43 +89,55 @@ class MQTTStatesMixin:
             discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
             
             # Status-Topic für alle Entities
+            status_topic = f"{self.base_topic}/{actor_id}/status"
+            status_str = "online" if self._board_status else "offline"
             self.mqtt_client.publish(
-                f"{self.base_topic}/{actor_id}/status",
-                "online" if self._board_status else "offline",
+                status_topic,
+                status_str,
                 qos=1,
                 retain=True
             )
+            self.debug_send_msg(status_topic, status_str, retained=True, qos=1)
             
             # State-Topic nur für Entities mit State
             if discovery_config.get('state_topic'):
+                state_topic = f"{self.base_topic}/{actor_id}/state"
+                state_str = self._convert_internal_to_state(actor_id, False)
                 self.mqtt_client.publish(
-                    f"{self.base_topic}/{actor_id}/state",
-                    self._convert_internal_to_state(actor_id, False),
+                    state_topic,
+                    state_str,
                     qos=1,
                     retain=True
                 )
+                self.debug_send_msg(state_topic, state_str, retained=True, qos=1)
 
         # Sensoren
         if 'sensors' in self.config:
             for sensor_id in self.config['sensors'].keys():
                 # Status-Topic für Sensoren
+                sensor_status_topic = f"{self.base_topic}/{sensor_id}/status"
+                status_str = "online" if self._board_status else "offline"
                 self.mqtt_client.publish(
-                    f"{self.base_topic}/{sensor_id}/status",
-                    "online" if self._board_status else "offline",
+                    sensor_status_topic,
+                    status_str,
                     qos=1,
                     retain=True
                 )
+                self.debug_send_msg(sensor_status_topic, status_str, retained=True, qos=1)
+                
                 # State-Topic für Sensoren (immer OFF bei Initialisierung)
+                sensor_state_topic = f"{self.base_topic}/{sensor_id}/state"
                 self.mqtt_client.publish(
-                    f"{self.base_topic}/{sensor_id}/state",
+                    sensor_state_topic,
                     "OFF",
                     qos=1,
                     retain=True
                 )
+                self.debug_send_msg(sensor_state_topic, "OFF", retained=True, qos=1)
 
     def _restore_states(self):
         """Stellt die letzten bekannten Zustände wieder her"""
-        logger.debug("Stelle letzte bekannte Zustände wieder her...")
+        self.debug_process_msg("Stelle letzte bekannte Zustände wieder her...")
         self.publish_debug_message("Stelle Zustände wieder her...")
         restore_timeout = float(self.config['timeouts'].get('state_restore', 3.0))
         pending_states = {
@@ -136,14 +156,15 @@ class MQTTStatesMixin:
                     # Konvertiere MQTT State in internen State
                     self.restored_states[actor_id] = self._convert_command_to_internal(actor_id, state_str)
                     del pending_states[actor_id]
-                    logger.debug(f"Wiederhergestellter State für {actor_id}: {state_str}")
+                    
+                    self.debug_process_msg(f"Wiederhergestellter State für {actor_id}: {state_str}")
                     self.publish_debug_message(f"State für {actor_id} wiederhergestellt: {state_str}")
                     
                     if not pending_states:
                         self.restore_complete.set()
             except Exception as e:
                 error_msg = f"Fehler beim Wiederherstellen des States: {e}"
-                logger.error(error_msg)
+                self.debug_error(error_msg, e)
                 self.publish_debug_message(error_msg)
 
         original_on_message = self.mqtt_client.on_message
@@ -151,7 +172,7 @@ class MQTTStatesMixin:
         
         try:
             if not self.restore_complete.wait(timeout=restore_timeout):
-                logger.warning("Timeout beim Wiederherstellen der States")
+                self.debug_process_msg("Timeout beim Wiederherstellen der States")
                 self.publish_debug_message("Timeout beim Wiederherstellen der States")
                 for actor_id, actor_config in pending_states.items():
                     entity_type = actor_config.get('entity_type', 'switch')
@@ -162,7 +183,7 @@ class MQTTStatesMixin:
                         entity_type, startup_state
                     )
                     
-                    logger.debug(f"Default State für {actor_id}: {startup_state}")
+                    self.debug_process_msg(f"Default State für {actor_id}: {startup_state}")
                     self.publish_debug_message(f"Default State für {actor_id}: {startup_state}")
         finally:
             self.mqtt_client.on_message = original_on_message
@@ -170,7 +191,7 @@ class MQTTStatesMixin:
     def get_startup_state(self, actor_id: str) -> bool:
         """Ermittelt den Startup-State für einen Actor"""
         if actor_id not in self.config['actors']:
-            logger.warning(f"Kein Config-Eintrag für {actor_id}")
+            self.debug_error(f"Kein Config-Eintrag für {actor_id}")
             return False
             
         actor_config = self.config['actors'][actor_id]
@@ -179,7 +200,7 @@ class MQTTStatesMixin:
         
         if startup_state == 'restore' and actor_id in self.restored_states:
             state = self.restored_states[actor_id]
-            logger.debug(f"Wiederhergestellter State für {actor_id}: {state}")
+            self.debug_process_msg(f"Wiederhergestellter State für {actor_id}: {state}")
             return state
             
         # Konvertiere startup_state in internen Boolean

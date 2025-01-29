@@ -1,0 +1,5 @@
+PyYAML
+adafruit-blinka
+adafruit-circuitpython-busdevice
+hidapi
+paho-mqtt

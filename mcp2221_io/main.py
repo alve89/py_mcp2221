@@ -1,22 +1,45 @@
 # main.py
-# Version: 1.6.0
+# Version: 1.5.5
 
 import os
 import time
 import yaml
-from .logging_config import logger
+from mcp2221_io.logging_config import logger
 from mcp2221_io import IOController, Actor, Sensor, SimpleInputHandler
-from .mqtt_handler import MQTTHandler  # Angepasster Import
+from mcp2221_io.mqtt_handler import MQTTHandler
 
 def load_config(config_path='config.yaml'):
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    config_file = os.path.join(module_dir, config_path)
+    """
+    Lädt die Konfiguration. Sucht die config.yaml in folgender Reihenfolge:
+    1. Im aktuellen Arbeitsverzeichnis
+    2. Im übergeordneten Verzeichnis des mcp2221_io Pakets
+    """
+    # Zuerst im aktuellen Verzeichnis suchen
+    if os.path.exists(config_path):
+        config_file = config_path
+    else:
+        # Im übergeordneten Verzeichnis des Pakets suchen
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_file = os.path.join(package_dir, config_path)
+        
+        # Wenn nicht gefunden, example config kopieren
+        if not os.path.exists(config_file):
+            example_config = os.path.join(package_dir, 'config.example.yaml')
+            if os.path.exists(example_config):
+                logger.info(f"Keine config.yaml gefunden, kopiere example config nach {config_file}")
+                import shutil
+                shutil.copy2(example_config, config_file)
+            else:
+                raise FileNotFoundError(f"Weder config.yaml noch config.example.yaml gefunden in {package_dir}")
+
     logger.debug(f"Lade Konfiguration aus {config_file}")
     try:
         with open(config_file, 'r') as file:
             config = yaml.safe_load(file)
             if 'mqtt' in config:
                 config['mqtt']['actors'] = config['actors']
+                if 'sensors' in config:
+                    config['mqtt']['sensors'] = config['sensors']
             return config
     except Exception as e:
         logger.error(f"Fehler beim Laden der Konfiguration: {e}")
@@ -106,13 +129,14 @@ def stop_sensors(controller):
             logger.error(f"Fehler beim Stoppen von Sensor {name}: {e}")
 
 def main():
+    """Hauptfunktion des Programms"""
     logger.debug("Starte Hauptprogramm")
     config = load_config()
     controller = IOController()
     logger.debug("Controller erstellt")
     
     setup_actors(controller, config['actors'])
-    setup_sensors(controller, config.get('sensors', {}))  # Neue Zeile
+    setup_sensors(controller, config.get('sensors', {}))
     key_mappings = setup_key_mappings(config['key_mappings'])
     
     mqtt_handler = None
@@ -160,7 +184,7 @@ def main():
         logger.debug("Input Handler gestoppt")
         
         # Stoppe die Sensoren
-        stop_sensors(controller)  # Neue Zeile
+        stop_sensors(controller)
         
         reset_actors_to_default(controller, config, mqtt_handler)
         logger.debug("Aktoren zurückgesetzt")
@@ -174,6 +198,8 @@ def main():
                 logger.error(f"Fehler beim Stoppen des MQTT Handlers: {e}")
         
         logger.debug("System erfolgreich beendet")
+    
+    return 0
 
 if __name__ == "__main__":
     main()
