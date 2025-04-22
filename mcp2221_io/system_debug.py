@@ -1,5 +1,5 @@
 # system_debug.py
-# Version: 1.0.0
+# Version: 1.1.0
 
 from typing import Dict, Optional, Any
 from mcp2221_io.logging_config import logger
@@ -17,7 +17,7 @@ class SystemDebugMixin:
     
     def debug_system_process(self, message: str, error: bool = False):
         """Debug-Ausgabe für System-Prozess-Informationen"""
-        if self.debug_process:
+        if hasattr(self, 'debug_process') and self.debug_process:
             if error:
                 logger.error(f"[System Process] {message}")
             else:
@@ -25,19 +25,19 @@ class SystemDebugMixin:
 
     def debug_actor_state(self, actor_id: str, state: Any, additional_info: Optional[str] = None):
         """Debug-Ausgabe für Actor-Zustandsänderungen"""
-        if self.debug_actors:
+        if hasattr(self, 'debug_actors') and self.debug_actors:
             info = f" ({additional_info})" if additional_info else ""
             logger.debug(f"[Actor State] {actor_id}: {state}{info}")
 
     def debug_sensor_state(self, sensor_id: str, state: Any, additional_info: Optional[str] = None):
         """Debug-Ausgabe für Sensor-Zustandsänderungen"""
-        if self.debug_sensors:
+        if hasattr(self, 'debug_sensors') and self.debug_sensors:
             info = f" ({additional_info})" if additional_info else ""
             logger.debug(f"[Sensor State] {sensor_id}: {state}{info}")
 
     def debug_system_error(self, message: str, error: Optional[Exception] = None):
         """Debug-Ausgabe für System-Fehler"""
-        if self.debug_process:
+        if hasattr(self, 'debug_process') and self.debug_process:
             if error:
                 logger.error(f"[System Error] {message}: {str(error)}")
             else:
@@ -45,7 +45,7 @@ class SystemDebugMixin:
 
     def debug_actor_error(self, actor_id: str, message: str, error: Optional[Exception] = None):
         """Debug-Ausgabe für Actor-spezifische Fehler"""
-        if self.debug_actors:
+        if hasattr(self, 'debug_actors') and self.debug_actors:
             if error:
                 logger.error(f"[Actor Error] {actor_id}: {message}: {str(error)}")
             else:
@@ -53,7 +53,7 @@ class SystemDebugMixin:
 
     def debug_sensor_error(self, sensor_id: str, message: str, error: Optional[Exception] = None):
         """Debug-Ausgabe für Sensor-spezifische Fehler"""
-        if self.debug_sensors:
+        if hasattr(self, 'debug_sensors') and self.debug_sensors:
             if error:
                 logger.error(f"[Sensor Error] {sensor_id}: {message}: {str(error)}")
             else:
@@ -61,20 +61,20 @@ class SystemDebugMixin:
 
     def debug_config_load(self, component: str, config: Dict):
         """Debug-Ausgabe für Konfigurationsladungen"""
-        if self.debug_process:
+        if hasattr(self, 'debug_process') and self.debug_process:
             logger.debug(f"[Config Load] {component}: {config}")
 
     def debug_startup(self, message: str):
         """Debug-Ausgabe für System-Startup-Informationen"""
-        if self.debug_process:
+        if hasattr(self, 'debug_process') and self.debug_process:
             logger.debug(f"[System Startup] {message}")
 
     def debug_shutdown(self, message: str):
         """Debug-Ausgabe für System-Shutdown-Informationen"""
-        if self.debug_process:
+        if hasattr(self, 'debug_process') and self.debug_process:
             logger.debug(f"[System Shutdown] {message}")
 
     def debug_gpio(self, message: str):
         """Debug-Ausgabe für GPIO-Operationen"""
-        if self.system_debug_config.get('gpio', False):
+        if hasattr(self, 'system_debug_config') and self.system_debug_config.get('gpio', False):
             logger.debug(f"[GPIO] {message}")

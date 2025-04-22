@@ -1,5 +1,5 @@
 # mqtt_config.py
-# Version: 1.0.0
+# Version: 1.2.0
 
 class EntityTypeConfig:
     """Konfigurationsklasse für Entity Types"""
@@ -47,12 +47,15 @@ class EntityTypeConfig:
         'lock': {
             'discovery_type': 'lock',
             'states': {
-                True: 'LOCKED',
-                False: 'UNLOCKED'
+                True: 'UNLOCKED',
+                False: 'LOCKED'
             },
             'commands': {
-                'LOCK': True,
-                'UNLOCK': False
+                'LOCK': False,      # LOCK Kommando setzt den internen State auf False
+                'UNLOCK': True,     # UNLOCK Kommando setzt den internen State auf True
+                # Zusätzliche Kommandos für Home Assistant Kompatibilität
+                'LOCK': False,
+                'UNLOCK': True
             },
             'discovery_config': {
                 'state_topic': True,
@@ -64,8 +67,27 @@ class EntityTypeConfig:
                 'optimistic': False
             },
             'startup_state_map': {
-                'locked': True,
-                'unlocked': False
+                'locked': False,    # "LOCKED" Startup-State setzt internen Value auf False
+                'unlocked': True,   # "UNLOCKED" Startup-State setzt internen Value auf True
+                'LOCKED': False,
+                'UNLOCKED': True
+            }
+        },
+        'binary_sensor': {
+            'discovery_type': 'binary_sensor',
+            'states': {
+                True: 'ON',
+                False: 'OFF'
+            },
+            'commands': {},  # Sensoren haben keine Commands
+            'discovery_config': {
+                'state_topic': True,
+                'payload_on': 'ON',
+                'payload_off': 'OFF'
+            },
+            'startup_state_map': {
+                'on': True,
+                'off': False
             }
         }
     }
@@ -91,8 +113,8 @@ class EntityTypeConfig:
     def convert_startup_state(cls, entity_type: str, startup_state: str) -> bool:
         """Konvertiert einen Startup State String in einen internen Boolean State"""
         config = cls.get_config(entity_type)
-        startup_state = startup_state.lower()
-        return config['startup_state_map'].get(startup_state, False)
+        startup_state = startup_state.upper()
+        return config['startup_state_map'].get(startup_state.lower(), False)
 
     @classmethod
     def get_discovery_config(cls, entity_type: str) -> dict:

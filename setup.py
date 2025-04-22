@@ -13,14 +13,15 @@ setup(
         'PyYAML',
         'hidapi',
         'adafruit-blinka',
-        'adafruit-circuitpython-busdevice'
+        'adafruit-circuitpython-busdevice',
+        'termcolor'
     ],
     entry_points={
         'console_scripts': [
             'mcp2221-controller=mcp2221_io.main:main',
         ],
     },
-    author="Your Name",
+    author="Stefan Herzog",
     author_email="your.email@example.com",
     description="MCP2221 IO Controller with MQTT Support",
     long_description=open('README.md').read() if os.path.exists('README.md') else '',
