@@ -88,6 +88,7 @@ class Config:
     def items(self):
         """Gibt die Schlüssel-Wert-Paare der Konfiguration zurück"""
         return self.config.items()
+config = get_config()
 
 class Logger:
     def __init__(self, level: str = "WARNING"):
@@ -117,6 +118,7 @@ class Logger:
         
     def get_logger(self):
         return self.logger
+logger = get_logger()
 
 class IODevice:
     _device_class = ""

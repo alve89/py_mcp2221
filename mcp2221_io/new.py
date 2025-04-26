@@ -6,7 +6,7 @@ import board
 import logging
 from termcolor import colored
 from typing import Dict, List, Optional, Any
-# from mcp2221_io.new_mqtt import MQTTClient
+from mcp2221_io.new_mqtt import MQTTClient
 from mcp2221_io.new_classes import get_logger, get_config, IODevice, IOActor, IOSensor, IOController
 
 
@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
     if controller.start():
         # MQTT-Client erstellen und starten
-        # mqtt_client = MQTTClient(config, controller, logger)
+        mqtt_client = MQTTClient(config.get_value('mqtt'), config.get_value('logging.mqtt'))
         
         try:
             # Haupt-Loop
@@ -48,7 +48,7 @@ if __name__ == "__main__":
                 controller.update()
                 
                 # MQTT-Client aktualisieren
-                # mqtt_client.update()
+                mqtt_client.update()
                 
                 # Status-Ausgabe für Debugging
                 for sensor_id, sensor in controller.sensors.items():
@@ -64,14 +64,13 @@ if __name__ == "__main__":
 
                 # Kurzes Timeout zum Verschnaufen
                 i += 1
-                print(i)
                 time.sleep(0.05)
                 
         except KeyboardInterrupt:
             print("Programm durch Benutzer unterbrochen.")
         finally:
             # MQTT-Client trennen
-            # mqtt_client.disconnect()
+            mqtt_client.disconnect()
             
             # Controller stoppen
             controller.stop()
