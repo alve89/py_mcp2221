@@ -45,7 +45,7 @@ class MQTTClient:
         self.client = mqtt.Client()
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
-        # self.client.on_message = self._on_message
+        self.client.on_message = self._on_message
         
         # Benutzeranmeldedaten setzen, falls vorhanden
         if self.username and self.password:
@@ -125,13 +125,14 @@ class MQTTClient:
         if not self.connected:
             self.connect()
     
-    def publish(self, topic: str, payload: str, retain: bool = False) -> bool:
+    def publish(self, topic: str, payload: str, retain: bool = False, skip_prefix: bool = False) -> bool:
         """Veröffentlicht eine Nachricht an ein MQTT-Topic.
         
         Args:
-            topic: Das MQTT-Topic (ohne base_topic)
+            topic: Das MQTT-Topic
             payload: Die zu veröffentlichende Nachricht
             retain: Ob die Nachricht beibehalten werden soll
+            skip_prefix: Wenn True, wird der base_topic nicht vorangestellt (für Discovery-Topics)
             
         Returns:
             bool: True, wenn die Nachricht erfolgreich veröffentlicht wurde, sonst False
@@ -142,8 +143,8 @@ class MQTTClient:
             return False
         
         try:
-            # Vollständiges Topic zusammensetzen
-            full_topic = f"{self.base_topic}/{topic}"
+            # Vollständiges Topic zusammensetzen, außer wenn skip_prefix True ist
+            full_topic = topic if skip_prefix else f"{self.base_topic}/{topic}"
             
             # Nachricht veröffentlichen
             result = self.client.publish(full_topic, payload, retain=retain)
@@ -224,49 +225,49 @@ class MQTTClient:
             if self.logging_config['process']:
                 logger.debug(colored("Planmäßige Trennung vom MQTT-Broker", 'cyan'))
     
-    # def _on_message(self, client, userdata, msg) -> None:
-    #     """Callback für eingehende Nachrichten."""
-    #     try:
-    #         # Prefix entfernen, um den Basis-Topic zu identifizieren
-    #         if not msg.topic.startswith(f"{self.base_topic}/"):
-    #             return
+    def _on_message(self, client, userdata, msg) -> None:
+        """Callback für eingehende Nachrichten."""
+        try:
+            # Prefix entfernen, um den Basis-Topic zu identifizieren
+            if not msg.topic.startswith(f"{self.base_topic}/"):
+                return
             
-    #         # Topic ohne Basis-Prefix extrahieren
-    #         relative_topic = msg.topic[len(self.base_topic) + 1:]
+            # Topic ohne Basis-Prefix extrahieren
+            relative_topic = msg.topic[len(self.base_topic) + 1:]
             
-    #         # Payload dekodieren
-    #         payload = msg.payload.decode()
+            # Payload dekodieren
+            payload = msg.payload.decode()
             
-    #         if self.config.get_value("logging.mqtt.receive", False):
-    #             logger.debug(f"MQTT-Nachricht empfangen: {msg.topic} = {payload}")
+            if self.logging_config['receive']:
+                logger.debug(colored(f"MQTT-Nachricht empfangen: {msg.topic} = {payload}", 'cyan'))
             
-    #         # Prüfen, ob ein Callback für dieses Topic registriert ist
-    #         for subscribed_topic, callback in self.subscriptions.items():
-    #             # Einfacher Wildcard-Support für +
-    #             if '+' in subscribed_topic:
-    #                 topic_parts = subscribed_topic.split('/')
-    #                 relative_parts = relative_topic.split('/')
+            # Prüfen, ob ein Callback für dieses Topic registriert ist
+            for subscribed_topic, callback in self.subscriptions.items():
+                # Einfacher Wildcard-Support für +
+                if '+' in subscribed_topic:
+                    topic_parts = subscribed_topic.split('/')
+                    relative_parts = relative_topic.split('/')
                     
-    #                 if len(topic_parts) != len(relative_parts):
-    #                     continue
+                    if len(topic_parts) != len(relative_parts):
+                        continue
                     
-    #                 match = True
-    #                 for i, part in enumerate(topic_parts):
-    #                     if part != '+' and part != relative_parts[i]:
-    #                         match = False
-    #                         break
+                    match = True
+                    for i, part in enumerate(topic_parts):
+                        if part != '+' and part != relative_parts[i]:
+                            match = False
+                            break
                     
-    #                 if match:
-    #                     callback(relative_topic, payload)
-    #                     break
+                    if match:
+                        callback(relative_topic, payload)
+                        break
                 
-    #             # Exakte Übereinstimmung
-    #             elif subscribed_topic == relative_topic:
-    #                 callback(relative_topic, payload)
-    #                 break
+                # Exakte Übereinstimmung
+                elif subscribed_topic == relative_topic:
+                    callback(relative_topic, payload)
+                    break
                 
-    #     except Exception as e:
-    #         logger.error(f"Fehler bei der Verarbeitung der MQTT-Nachricht: {e}")
+        except Exception as e:
+            logger.error(colored(f"Fehler bei der Verarbeitung der MQTT-Nachricht: {e}", 'cyan'))
     
     def _restore_subscriptions(self) -> None:
         """Stellt alle gespeicherten Subscriptions wieder her."""

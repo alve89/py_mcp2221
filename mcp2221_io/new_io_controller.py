@@ -24,6 +24,9 @@ class IOController:
         self.sensors = {}  # Speichert alle Sensoren nach Namen
         self.running = False      
         self.mqtt_client = mqtt_client  # MQTT-Client Referenz speichern
+
+        if self.mqtt_client:
+            self.mqtt_client.client.on_message = self.mqtt_client._on_message
  
     def setup_entities(self) -> bool:
         """Erstellt alle Geräte basierend auf der geladenen Konfiguration."""
@@ -93,11 +96,9 @@ class IOController:
             
         self.actors[actor_id] = actor
         logger.info(f"Aktor '{actor_id}' erstellt (Pin: {config['pin']})")
-    
+        
     def start(self) -> bool:
         """Startet den Controller und initialisiert alle Geräte."""
-        # if not self.load_config():
-        #     return False
         
         if not self.setup_entities():
             return False
@@ -106,19 +107,116 @@ class IOController:
         logger.info("IOController erfolgreich gestartet.")
 
         if self.mqtt_client and self.mqtt_client.connected:
+            # Status online veröffentlichen
             self.mqtt_client.publish("status", "online", retain=True)
             logger.debug("MQTT Online-Status veröffentlicht.")
 
+            # Home Assistant Auto-Discovery Konfiguration
+            discovery_prefix = config.get_value("mqtt.discovery_prefix", "homeassistant")
+            node_id = config.get_value("mqtt.node_id", "mcp2221")
+            
+            # Auto-Discovery für Sensoren
             for sensor_id, sensor in self.sensors.items():
+                # Aktuellen Status veröffentlichen
                 state_value = "ON" if sensor.state else "OFF"
                 self.mqtt_client.publish(f"sensors/{sensor_id}/state", state_value, retain=True)
-
+                
+                # Auto-Discovery Payload für Sensor erstellen
+                sensor_config = {
+                    "name": sensor.name,
+                    "unique_id": f"{node_id}_{sensor_id}",
+                    "device_class": sensor.device_class if sensor.device_class else None,
+                    "state_topic": f"{self.mqtt_client.base_topic}/sensors/{sensor_id}/state",
+                    "availability_topic": f"{self.mqtt_client.base_topic}/status",
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "device": {
+                        "identifiers": [f"{node_id}"],
+                        "name": f"MCP2221 IO Controller",
+                        "manufacturer": "Custom",
+                        "model": "MCP2221 IO"
+                    }
+                }
+                
+                # Überprüfen der Konfiguration und Entfernen von None-Werten
+                sensor_config = {k: v for k, v in sensor_config.items() if v is not None}
+                
+                # Auto-Discovery Nachricht für Sensor veröffentlichen
+                discovery_topic = f"{discovery_prefix}/binary_sensor/{node_id}/{sensor_id}/config"
+                self.mqtt_client.publish(discovery_topic, json.dumps(sensor_config), retain=True, skip_prefix=True)
+                logger.debug(f"Auto-Discovery für Sensor {sensor_id} veröffentlicht: {discovery_topic}")
+            
+            # Auto-Discovery für Aktoren
             for actor_id, actor in self.actors.items():
+                # Aktuellen Status veröffentlichen
                 state_value = "ON" if actor.state else "OFF"
                 self.mqtt_client.publish(f"actors/{actor_id}/state", state_value, retain=True)
+                
+                # Auto-Discovery Payload für Aktor erstellen
+                actor_config = {
+                    "name": actor.name,
+                    "unique_id": f"{node_id}_{actor_id}",
+                    "device_class": actor.device_class if actor.device_class else None,
+                    "state_topic": f"{self.mqtt_client.base_topic}/actors/{actor_id}/state",
+                    "command_topic": f"{self.mqtt_client.base_topic}/actors/{actor_id}/set",
+                    "availability_topic": f"{self.mqtt_client.base_topic}/status",
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "device": {
+                        "identifiers": [f"{node_id}"],
+                        "name": f"MCP2221 IO Controller",
+                        "manufacturer": "Custom",
+                        "model": "MCP2221 IO"
+                    }
+                }
+                
+                # Überprüfen der Konfiguration und Entfernen von None-Werten
+                actor_config = {k: v for k, v in actor_config.items() if v is not None}
+                
+                # Auto-Discovery Nachricht für Aktor veröffentlichen
+                discovery_topic = f"{discovery_prefix}/switch/{node_id}/{actor_id}/config"
+                self.mqtt_client.publish(discovery_topic, json.dumps(actor_config), retain=True, skip_prefix=True)
+                logger.debug(f"Auto-Discovery für Aktor {actor_id} veröffentlicht: {discovery_topic}")
+                
+                # Subscribe auf Command-Topic des Aktors
+                self.mqtt_client.subscribe(f"actors/{actor_id}/set", self._handle_actor_command)
 
         return True
-    
+
+    def _handle_actor_command(self, topic: str, payload: str) -> None:
+        """Verarbeitet Befehle für Aktoren von Home Assistant."""
+        try:
+            # Extrahiert die Aktor-ID aus dem Topic (Format: "actors/{actor_id}/set")
+            parts = topic.split('/')
+            if len(parts) >= 2:
+                actor_id = parts[1]
+                logger.info(f"MQTT Befehl empfangen für Aktor {actor_id}: {payload}")
+                
+                # Aktor abrufen
+                actor = self.get_actor(actor_id)
+                
+                if actor:
+                    if payload.upper() == "ON":
+                        # Prüfen, ob Auto-Reset konfiguriert ist
+                        if hasattr(actor, '_auto_reset') and actor._auto_reset > 0:
+                            actor.toggle()  # Toggle für Aktoren mit Auto-Reset
+                        else:
+                            actor.turn_on()  # Normale Einschaltung für Aktoren ohne Auto-Reset
+                        logger.info(f"Aktor {actor_id} wurde durch MQTT-Befehl eingeschaltet")
+                    elif payload.upper() == "OFF":
+                        actor.turn_off()
+                        logger.info(f"Aktor {actor_id} wurde durch MQTT-Befehl ausgeschaltet")
+                    else:
+                        logger.warning(f"Unbekannter Befehl für Aktor {actor_id}: {payload}")
+                else:
+                    logger.warning(f"Aktor {actor_id} nicht gefunden für Befehl: {payload}")
+        except Exception as e:
+            logger.error(f"Fehler bei der Verarbeitung des Aktor-Befehls: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+
+
     def stop(self) -> None:
         """Stoppt den Controller und gibt alle Ressourcen frei."""
         self.running = False
@@ -151,6 +249,7 @@ class IOController:
         # Aktoren aktualisieren
         for actor in self.actors.values():
             actor.update()
+            actor.sync_state()
         
         # Sensoren aktualisieren
         for sensor in self.sensors.values():

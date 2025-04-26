@@ -37,7 +37,6 @@ class IOActor(IODevice):
         if self._digital_pin:
             logger.debug("Status (logisch) für Aktor " + colored(self.name, 'magenta') + f" auf '{not new_state}' gesetzt.") 
             self._digital_pin.value = new_state
-            self.sync_state()
 
     def shutdown(self) -> bool:
         self.turn_off()

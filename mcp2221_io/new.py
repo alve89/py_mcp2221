@@ -53,12 +53,13 @@ if __name__ == "__main__":
                         logger.debug(f"Aktor " + colored(actor_id, 'magenta') + ": " + colored(actor.state, 'green' if actor.state else 'red'))
 
                 
-                if i == 20:
-                    controller.get_actor('door_hintertuer').toggle()
+                if i == 10:
+                    # controller.get_actor('door_hintertuer').toggle()
+                    print("")
 
                 # Kurzes Timeout zum Verschnaufen
                 i += 1
-                time.sleep(0.05)
+                time.sleep(0.1)
                 
         except KeyboardInterrupt:
             print("Programm durch Benutzer unterbrochen.")

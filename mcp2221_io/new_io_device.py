@@ -91,6 +91,8 @@ class IODevice:
     def sync_state(self) -> None:
         """"Speichert den aktuellen physischen Status des Pins in die Variable '_state_raw'"""
         self._state_raw = self._digital_pin.value
+
+        # Speichere den aktuellen logischen Wert als letzten Wert und überschreibe den aktuellen logischen Wert
         self._last_state = self._state
         self._state = not self._state_raw if self._inverted else self._state_raw
 
