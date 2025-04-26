@@ -5,7 +5,7 @@ import time
 import json
 from termcolor import colored
 from typing import Dict, Any, Optional, Callable
-from mcp2221_io.new_classes import get_logger
+from mcp2221_io.new_core import get_logger
 
 logger = get_logger()
 
@@ -99,20 +99,20 @@ class MQTTClient:
             return True
             
         except Exception as e:
-            logger.error(f"Fehler beim Verbinden mit MQTT-Broker: {e}")
+            logger.error(colored("Fehler beim Verbinden mit MQTT-Broker: " + str(e), 'cyan'))
             self._handle_connection_failure()
             return False
     
     def disconnect(self) -> None:
         """Trennt die Verbindung zum MQTT-Broker."""
         if self.connected:
-            logger.info(colored("Verbindung zum MQTT-Broker wird getrennt", 'cyan'))
+            logger.debug(colored("Verbindung zum MQTT-Broker wird getrennt", 'cyan'))
             try:
                 self.client.disconnect()
                 self.client.loop_stop()
                 logger.info(colored("MQTT-Verbindung getrennt", 'cyan'))
             except Exception as e:
-                logger.error(colored("Fehler beim Trennen der MQTT-Verbindung: " + e, 'cyan'))
+                logger.error(colored("Fehler beim Trennen der MQTT-Verbindung: " + str(e), 'cyan'))
         
         self.connected = False
     
@@ -125,78 +125,78 @@ class MQTTClient:
         if not self.connected:
             self.connect()
     
-    # def publish(self, topic: str, payload: str, retain: bool = False) -> bool:
-    #     """Veröffentlicht eine Nachricht an ein MQTT-Topic.
+    def publish(self, topic: str, payload: str, retain: bool = False) -> bool:
+        """Veröffentlicht eine Nachricht an ein MQTT-Topic.
         
-    #     Args:
-    #         topic: Das MQTT-Topic (ohne base_topic)
-    #         payload: Die zu veröffentlichende Nachricht
-    #         retain: Ob die Nachricht beibehalten werden soll
+        Args:
+            topic: Das MQTT-Topic (ohne base_topic)
+            payload: Die zu veröffentlichende Nachricht
+            retain: Ob die Nachricht beibehalten werden soll
             
-    #     Returns:
-    #         bool: True, wenn die Nachricht erfolgreich veröffentlicht wurde, sonst False
-    #     """
-    #     if not self.connected:
-    #         if self.config.get_value("logging.mqtt.send", False):
-    #             logger.warning(f"Kann Nachricht nicht veröffentlichen: Keine MQTT-Verbindung")
-    #         return False
+        Returns:
+            bool: True, wenn die Nachricht erfolgreich veröffentlicht wurde, sonst False
+        """
+        if not self.connected:
+            if self.logging_config['send']:
+                logger.warning(f"Kann Nachricht nicht veröffentlichen: Keine MQTT-Verbindung")
+            return False
         
-    #     try:
-    #         # Vollständiges Topic zusammensetzen
-    #         full_topic = f"{self.base_topic}/{topic}"
+        try:
+            # Vollständiges Topic zusammensetzen
+            full_topic = f"{self.base_topic}/{topic}"
             
-    #         # Nachricht veröffentlichen
-    #         result = self.client.publish(full_topic, payload, retain=retain)
+            # Nachricht veröffentlichen
+            result = self.client.publish(full_topic, payload, retain=retain)
             
-    #         # Ergebnis prüfen
-    #         if result.rc == mqtt.MQTT_ERR_SUCCESS:
-    #             if self.config.get_value("logging.mqtt.send", False):
-    #                 logger.debug(f"MQTT-Nachricht veröffentlicht: {full_topic} = {payload}")
-    #             return True
-    #         else:
-    #             logger.error(f"Fehler beim Veröffentlichen der MQTT-Nachricht: {mqtt.error_string(result.rc)}")
-    #             return False
+            # Ergebnis prüfen
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                if self.logging_config['send']:
+                    logger.debug(colored("MQTT-Nachricht veröffentlicht: " + full_topic + " = " + payload, 'cyan'))
+                return True
+            else:
+                logger.error(colored("Fehler beim Veröffentlichen der MQTT-Nachricht: " + mqtt.error_string(result.rc), 'cyan'))
+                return False
                 
-    #     except Exception as e:
-    #         logger.error(f"Fehler beim Veröffentlichen der MQTT-Nachricht: {e}")
-    #         return False
+        except Exception as e:
+            logger.error(colored("Fehler beim Veröffentlichen der MQTT-Nachricht: " + str(e), 'cyan'))
+            return False
     
-    # def subscribe(self, topic: str, callback: Callable[[str, str], None]) -> bool:
-    #     """Abonniert ein MQTT-Topic und registriert einen Callback.
+    def subscribe(self, topic: str, callback: Callable[[str, str], None]) -> bool:
+        """Abonniert ein MQTT-Topic und registriert einen Callback.
         
-    #     Args:
-    #         topic: Das MQTT-Topic (ohne base_topic)
-    #         callback: Die Callback-Funktion, die aufgerufen wird, wenn eine Nachricht empfangen wird.
-    #                   Die Funktion sollte zwei Parameter annehmen: topic und payload.
+        Args:
+            topic: Das MQTT-Topic (ohne base_topic)
+            callback: Die Callback-Funktion, die aufgerufen wird, wenn eine Nachricht empfangen wird.
+                      Die Funktion sollte zwei Parameter annehmen: topic und payload.
             
-    #     Returns:
-    #         bool: True, wenn das Abonnement erfolgreich war, sonst False
-    #     """
-    #     # Abonnement speichern, unabhängig vom Verbindungsstatus
-    #     self.subscriptions[topic] = callback
+        Returns:
+            bool: True, wenn das Abonnement erfolgreich war, sonst False
+        """
+        # Abonnement speichern, unabhängig vom Verbindungsstatus
+        self.subscriptions[topic] = callback
         
-    #     if not self.connected:
-    #         return False
+        if not self.connected:
+            return False
         
-    #     try:
-    #         # Vollständiges Topic zusammensetzen
-    #         full_topic = f"{self.base_topic}/{topic}"
+        try:
+            # Vollständiges Topic zusammensetzen
+            full_topic = f"{self.base_topic}/{topic}"
             
-    #         # Topic abonnieren
-    #         result = self.client.subscribe(full_topic)
+            # Topic abonnieren
+            result = self.client.subscribe(full_topic)
             
-    #         # Ergebnis prüfen
-    #         if result[0] == mqtt.MQTT_ERR_SUCCESS:
-    #             if self.config.get_value("logging.mqtt.process", False):
-    #                 logger.debug(f"MQTT-Topic abonniert: {full_topic}")
-    #             return True
-    #         else:
-    #             logger.error(f"Fehler beim Abonnieren des MQTT-Topics: {mqtt.error_string(result[0])}")
-    #             return False
+            # Ergebnis prüfen
+            if result[0] == mqtt.MQTT_ERR_SUCCESS:
+                if self.logging_config['process']:
+                    logger.debug(f"MQTT-Topic abonniert: {full_topic}")
+                return True
+            else:
+                logger.error(colored("Fehler beim Abonnieren des MQTT-Topics: " + mqtt.error_string(result[0]), 'cyan'))
+                return False
                 
-    #     except Exception as e:
-    #         logger.error(f"Fehler beim Abonnieren des MQTT-Topics: {e}")
-    #         return False
+        except Exception as e:
+            logger.error(colored("Fehler beim Abonnieren des MQTT-Topics: " + str(e), 'cyan'))
+            return False
     
     def _on_connect(self, client, userdata, flags, rc) -> None:
         """Callback für erfolgreiche Verbindung."""
@@ -205,12 +205,12 @@ class MQTTClient:
             self.reconnect_delay = self.reconnect_min_delay  # Zurücksetzen des Reconnect-Delays
             
             if self.logging_config['process']:
-                logger.info(colored("Verbunden mit MQTT-Broker mit Ergebnis: " + rc, 'cyan'))
+                logger.info(colored("Verbunden mit MQTT-Broker mit Ergebnis: " + str(rc), 'cyan'))
             
             # Abonnements wiederherstellen
             self._restore_subscriptions()
         else:
-            logger.error(colored("Verbindung zum MQTT-Broker fehlgeschlagen mit Ergebnis: " + rc, 'cyan'))
+            logger.error(colored("Verbindung zum MQTT-Broker fehlgeschlagen mit Ergebnis: " + str(rc), 'cyan'))
             self._handle_connection_failure()
     
     def _on_disconnect(self, client, userdata, rc) -> None:
@@ -219,10 +219,10 @@ class MQTTClient:
         
         if rc != 0:
             if self.logging_config['process']:
-                logger.warning("Unerwartete Trennung vom MQTT-Broker: " + rc, 'cyan')
+                logger.warning("Unerwartete Trennung vom MQTT-Broker: " + str(rc), 'cyan')
         else:
             if self.logging_config['process']:
-                logger.info(colored("Planmäßige Trennung vom MQTT-Broker", 'cyan'))
+                logger.debug(colored("Planmäßige Trennung vom MQTT-Broker", 'cyan'))
     
     # def _on_message(self, client, userdata, msg) -> None:
     #     """Callback für eingehende Nachrichten."""
@@ -284,4 +284,4 @@ class MQTTClient:
         """Behandelt einen Verbindungsfehler und passt das Reconnect-Delay an."""
         # Erhöht das Reconnect-Delay exponentiell bis zum Maximum
         self.reconnect_delay = min(self.reconnect_delay * 2, self.reconnect_max_delay)
-        logger.debug(colored("Reconnect-Delay auf " + self.reconnect_delay + " Sekunden erhöht", 'cyan'))
+        logger.debug(colored("Reconnect-Delay auf " + str(self.reconnect_delay) + " Sekunden erhöht", 'cyan'))

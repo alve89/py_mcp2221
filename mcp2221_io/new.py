@@ -6,14 +6,7 @@ import board
 import logging
 from termcolor import colored
 from typing import Dict, List, Optional, Any
-from mcp2221_io.new_mqtt import MQTTClient
-from mcp2221_io.new_classes import get_logger, get_config, IODevice, IOActor, IOSensor, IOController
-
-
-
-
-
-
+from mcp2221_io import MQTTClient, get_logger, get_config, IOController
 
 
 
@@ -33,13 +26,14 @@ if __name__ == "__main__":
     debug_level = config.get_value("logging.level", "WARNING")
     # logger = Logger(debug_level).get_logger()
 
-    # Controller erstellen und starten
-    controller = IOController()
+    # MQTT-Client erstellen
+    mqtt_client = MQTTClient(config.get_value('mqtt'), config.get_value('logging.mqtt'))
+    mqtt_client.connect()  # Verbindung herstellen
 
-    if controller.start():
-        # MQTT-Client erstellen und starten
-        mqtt_client = MQTTClient(config.get_value('mqtt'), config.get_value('logging.mqtt'))
-        
+    # Controller erstellen und starten
+    controller = IOController(mqtt_client)
+
+    if controller.start():        
         try:
             # Haupt-Loop
             i = 0
@@ -68,9 +62,10 @@ if __name__ == "__main__":
                 
         except KeyboardInterrupt:
             print("Programm durch Benutzer unterbrochen.")
+
         finally:
-            # MQTT-Client trennen
-            mqtt_client.disconnect()
-            
             # Controller stoppen
             controller.stop()
+
+            # MQTT-Client trennen
+            mqtt_client.disconnect()

@@ -10,7 +10,9 @@ import json
 from termcolor import colored
 from typing import Dict, List, Optional, Any
 from mcp2221_io.new_io_actor import IOActor
-
+from mcp2221_io.new_io_sensor import IOSensor
+from mcp2221_io.new_io_device import IODevice
+from mcp2221_io.new_core import logger, config
 
 
 class IOController:
@@ -32,14 +34,14 @@ class IOController:
             if 'sensors' in config:
                 for sensor_id, sensor_config in config['sensors'].items():
                     if sensor_config.get('entity_type') == 'binary_sensor':
-                        logger.debug(f"Entität {sensor_id} ist ein Sensor vom Typ {sensor_config.get('entity_type')}")
+                        logger.debug(f"Entität {sensor_id} ist ein Sensor vom Typ '{sensor_config.get('entity_type')}'")
                         self._create_binary_sensor(sensor_id, sensor_config)
       
             # Aktoren erstellen
             if 'actors' in config:
                 for actor_id, actor_config in config['actors'].items():
                     if actor_config.get('entity_type') == 'switch':
-                        logger.debug(f"Entität {actor_id} ist ein Sensor vom Typ {actor_config.get('entity_type')}")
+                        logger.debug(f"Entität {actor_id} ist ein Sensor vom Typ '{actor_config.get('entity_type')}'")
                         self._create_switch(actor_id, actor_config)
             
             logger.info(f"Geräte erfolgreich eingerichtet: {len(self.sensors)} Sensoren, {len(self.actors)} Aktoren")
