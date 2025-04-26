@@ -1,15 +1,17 @@
 # io_actor.py
-# Version: 1.6.5
+# Version: 2.0.0
 
 import board
 import digitalio
 import time
 import threading
-from typing import Optional, Callable, Dict
-from mcp2221_io.logging_config import logger
-from mcp2221_io.io_device import IODevice, IOMode
+from typing import Optional, Callable, Dict, Any
 
-class Actor(IODevice):
+from .logging_config import logger, LogCategory
+from .io_device import IODevice
+from .debug_mixin import DebugMixin
+
+class Actor(IODevice, DebugMixin):
     """Repräsentiert einen Actor (Aktor) mit GPIO-Steuerung"""
 
     def __init__(
@@ -27,10 +29,8 @@ class Actor(IODevice):
         :param reset_delay: Verzögerung für automatische Rückstellung
         :param debug_config: Debug-Konfiguration (aus config.yaml)
         """
-        super().__init__(pin, inverted)
-
-        # Debug-Konfiguration direkt aus config.yaml
-        self.debug_actors = debug_config.get("system", {}).get("entities", {}).get("actors", False)
+        IODevice.__init__(self, pin, inverted)
+        self._init_debug_config(debug_config)
 
         # Pin-Konfiguration
         self._gpio_pin = getattr(board, self._pin)
@@ -57,13 +57,14 @@ class Actor(IODevice):
             self._state = state
 
             if self.debug_actors:
-                logger.info(f"[Actor] Pin {self._pin} → gesetzt auf {'ON' if state else 'OFF'} (digital: {digital_state})")
+                logger.debug(f"Pin {self._pin} → gesetzt auf {'ON' if state else 'OFF'} (digital: {digital_state})", 
+                           LogCategory.ACTOR)
 
             if state and self._reset_delay > 0:
                 self._start_reset_timer()
         except Exception as e:
             if self.debug_actors:
-                logger.error(f"[Actor] Fehler beim Setzen von Pin {self._pin}: {e}")
+                logger.error(f"Fehler beim Setzen von Pin {self._pin}: {e}", LogCategory.ACTOR)
 
     def _start_reset_timer(self):
         """Startet den Reset-Timer für den Actor"""
@@ -73,20 +74,20 @@ class Actor(IODevice):
         def reset_callback():
             try:
                 if self.debug_actors:
-                    logger.debug(f"[Actor] Pin {self._pin} → Auto-Reset startet in {self._reset_delay} Sekunden")
+                    logger.debug(f"Pin {self._pin} → Auto-Reset startet in {self._reset_delay} Sekunden", LogCategory.ACTOR)
                 time.sleep(self._reset_delay)
                 if self.on_reset:
                     self.on_reset()
                 else:
                     self.set(False)
                 if self.debug_actors:
-                    logger.info(f"[Actor] Pin {self._pin} wurde automatisch zurückgesetzt")
+                    logger.info(f"Pin {self._pin} wurde automatisch zurückgesetzt", LogCategory.ACTOR)
             except Exception as e:
                 if self.debug_actors:
-                    logger.error(f"[Actor] Fehler beim Auto-Reset von Pin {self._pin}: {e}")
+                    logger.error(f"Fehler beim Auto-Reset von Pin {self._pin}: {e}", LogCategory.ACTOR)
 
         self._reset_thread = threading.Thread(target=reset_callback, daemon=True)
         self._reset_thread.start()
 
         if self.debug_actors:
-            logger.debug(f"[Actor] Pin {self._pin} → Reset-Timer gestartet: {self._reset_delay}s")
+            logger.debug(f"Pin {self._pin} → Reset-Timer gestartet: {self._reset_delay}s", LogCategory.ACTOR)

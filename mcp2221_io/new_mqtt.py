@@ -1,0 +1,283 @@
+# mcp2221_io/new_mqtt.py
+
+import paho.mqtt.client as mqtt
+import time
+import json
+from typing import Dict, Any, Optional, Callable
+from mcp2221_io.new_classes import get_config, get_logger
+
+class MQTTClient:
+    """MQTT-Client für die Kommunikation mit Home Assistant.
+    
+    Diese Klasse ist nur für die Verbindung und den Nachrichtenversand zuständig.
+    Die Logik zur Bestimmung, wann Nachrichten gesendet werden sollen, liegt im IOController.
+    """
+    
+    def __init__(self):
+        """Initialisiert den MQTT-Client."""
+        self.config = get_config()
+        self.logger = get_logger()
+        
+        self.logger.info("MQTT-Client wird initialisiert.")
+        
+        # MQTT-Konfiguration aus der Config extrahieren
+        mqtt_config = self.config.get_value("mqtt", {})
+        self.broker = mqtt_config.get("broker", "localhost")
+        self.port = mqtt_config.get("port", 1883)
+        self.username = mqtt_config.get("username")
+        self.password = mqtt_config.get("password")
+        self.base_topic = mqtt_config.get("base_topic", "mcp2221")
+        
+        # Timeouts und Reconnect-Konfiguration
+        timeouts = mqtt_config.get("timeouts", {})
+        reconnect = mqtt_config.get("reconnect", {})
+        
+        self.connect_timeout = timeouts.get("connect", 5.0)
+        self.keepalive = timeouts.get("keepalive", 60)
+        
+        self.reconnect_min_delay = reconnect.get("min_delay", 1)
+        self.reconnect_max_delay = reconnect.get("max_delay", 30)
+        self.reconnect_delay = self.reconnect_min_delay
+        
+        # MQTT-Client initialisieren
+        self.client = mqtt.Client()
+        self.client.on_connect = self._on_connect
+        self.client.on_disconnect = self._on_disconnect
+        self.client.on_message = self._on_message
+        
+        # Benutzeranmeldedaten setzen, falls vorhanden
+        if self.username and self.password:
+            self.client.username_pw_set(self.username, self.password)
+        
+        # Status-Variablen
+        self.connected = False
+        self.last_connection_attempt = 0
+        self.subscriptions = {}  # Topic -> Callback-Funktion
+        
+        self.logger.info("MQTT-Client wurde initialisiert und konfiguriert.")
+    
+    def connect(self) -> bool:
+        """Stellt eine Verbindung zum MQTT-Broker her.
+        
+        Returns:
+            bool: True, wenn die Verbindung erfolgreich war, sonst False
+        """
+        if self.connected:
+            return True
+        
+        # Prüfen, ob die Reconnect-Verzögerung eingehalten werden soll
+        current_time = time.monotonic()
+        if current_time - self.last_connection_attempt < self.reconnect_delay:
+            return False
+        
+        self.last_connection_attempt = current_time
+        
+        try:
+            self.logger.info(f"Verbindung zum MQTT-Broker {self.broker}:{self.port} wird hergestellt...")
+            self.client.connect(self.broker, self.port, self.keepalive)
+            self.client.loop_start()
+            
+            # Warten bis die Verbindung hergestellt ist (oder Timeout)
+            timeout_time = current_time + self.connect_timeout
+            while not self.connected and current_time < timeout_time:
+                time.sleep(0.1)
+                current_time = time.monotonic()
+            
+            if not self.connected:
+                self.logger.error(f"Timeout beim Verbinden mit MQTT-Broker {self.broker}:{self.port}")
+                self._handle_connection_failure()
+                return False
+            
+            self.logger.info(f"Verbindung zum MQTT-Broker {self.broker}:{self.port} hergestellt")
+            
+            # Alle zuvor registrierten Subscriptions wiederherstellen
+            self._restore_subscriptions()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Fehler beim Verbinden mit MQTT-Broker: {e}")
+            self._handle_connection_failure()
+            return False
+    
+    def disconnect(self) -> None:
+        """Trennt die Verbindung zum MQTT-Broker."""
+        if self.connected:
+            try:
+                self.client.disconnect()
+                self.client.loop_stop()
+                self.logger.info("MQTT-Verbindung getrennt")
+            except Exception as e:
+                self.logger.error(f"Fehler beim Trennen der MQTT-Verbindung: {e}")
+        
+        self.connected = False
+    
+    def update(self) -> None:
+        """Aktualisiert den MQTT-Client und prüft die Verbindung.
+        
+        Diese Funktion sollte regelmäßig in der Hauptschleife aufgerufen werden.
+        """
+        # Verbindung prüfen und ggf. wiederherstellen
+        if not self.connected:
+            self.connect()
+    
+    def publish(self, topic: str, payload: str, retain: bool = False) -> bool:
+        """Veröffentlicht eine Nachricht an ein MQTT-Topic.
+        
+        Args:
+            topic: Das MQTT-Topic (ohne base_topic)
+            payload: Die zu veröffentlichende Nachricht
+            retain: Ob die Nachricht beibehalten werden soll
+            
+        Returns:
+            bool: True, wenn die Nachricht erfolgreich veröffentlicht wurde, sonst False
+        """
+        if not self.connected:
+            if self.config.get_value("logging.mqtt.send", False):
+                self.logger.warning(f"Kann Nachricht nicht veröffentlichen: Keine MQTT-Verbindung")
+            return False
+        
+        try:
+            # Vollständiges Topic zusammensetzen
+            full_topic = f"{self.base_topic}/{topic}"
+            
+            # Nachricht veröffentlichen
+            result = self.client.publish(full_topic, payload, retain=retain)
+            
+            # Ergebnis prüfen
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                if self.config.get_value("logging.mqtt.send", False):
+                    self.logger.debug(f"MQTT-Nachricht veröffentlicht: {full_topic} = {payload}")
+                return True
+            else:
+                self.logger.error(f"Fehler beim Veröffentlichen der MQTT-Nachricht: {mqtt.error_string(result.rc)}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Fehler beim Veröffentlichen der MQTT-Nachricht: {e}")
+            return False
+    
+    def subscribe(self, topic: str, callback: Callable[[str, str], None]) -> bool:
+        """Abonniert ein MQTT-Topic und registriert einen Callback.
+        
+        Args:
+            topic: Das MQTT-Topic (ohne base_topic)
+            callback: Die Callback-Funktion, die aufgerufen wird, wenn eine Nachricht empfangen wird.
+                      Die Funktion sollte zwei Parameter annehmen: topic und payload.
+            
+        Returns:
+            bool: True, wenn das Abonnement erfolgreich war, sonst False
+        """
+        # Abonnement speichern, unabhängig vom Verbindungsstatus
+        self.subscriptions[topic] = callback
+        
+        if not self.connected:
+            return False
+        
+        try:
+            # Vollständiges Topic zusammensetzen
+            full_topic = f"{self.base_topic}/{topic}"
+            
+            # Topic abonnieren
+            result = self.client.subscribe(full_topic)
+            
+            # Ergebnis prüfen
+            if result[0] == mqtt.MQTT_ERR_SUCCESS:
+                if self.config.get_value("logging.mqtt.process", False):
+                    self.logger.debug(f"MQTT-Topic abonniert: {full_topic}")
+                return True
+            else:
+                self.logger.error(f"Fehler beim Abonnieren des MQTT-Topics: {mqtt.error_string(result[0])}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Fehler beim Abonnieren des MQTT-Topics: {e}")
+            return False
+    
+    def _on_connect(self, client, userdata, flags, rc) -> None:
+        """Callback für erfolgreiche Verbindung."""
+        if rc == 0:
+            self.connected = True
+            self.reconnect_delay = self.reconnect_min_delay  # Zurücksetzen des Reconnect-Delays
+            
+            if self.config.get_value("logging.mqtt.process", False):
+                self.logger.info(f"Verbunden mit MQTT-Broker mit Ergebnis: {rc}")
+            
+            # Abonnements wiederherstellen
+            self._restore_subscriptions()
+        else:
+            self.logger.error(f"Verbindung zum MQTT-Broker fehlgeschlagen mit Ergebnis: {rc}")
+            self._handle_connection_failure()
+    
+    def _on_disconnect(self, client, userdata, rc) -> None:
+        """Callback für Verbindungstrennung."""
+        self.connected = False
+        
+        if rc != 0:
+            if self.config.get_value("logging.mqtt.process", False):
+                self.logger.warning(f"Unerwartete Trennung vom MQTT-Broker: {rc}")
+        else:
+            if self.config.get_value("logging.mqtt.process", False):
+                self.logger.info("Planmäßige Trennung vom MQTT-Broker")
+    
+    def _on_message(self, client, userdata, msg) -> None:
+        """Callback für eingehende Nachrichten."""
+        try:
+            # Prefix entfernen, um den Basis-Topic zu identifizieren
+            if not msg.topic.startswith(f"{self.base_topic}/"):
+                return
+            
+            # Topic ohne Basis-Prefix extrahieren
+            relative_topic = msg.topic[len(self.base_topic) + 1:]
+            
+            # Payload dekodieren
+            payload = msg.payload.decode()
+            
+            if self.config.get_value("logging.mqtt.receive", False):
+                self.logger.debug(f"MQTT-Nachricht empfangen: {msg.topic} = {payload}")
+            
+            # Prüfen, ob ein Callback für dieses Topic registriert ist
+            for subscribed_topic, callback in self.subscriptions.items():
+                # Einfacher Wildcard-Support für +
+                if '+' in subscribed_topic:
+                    topic_parts = subscribed_topic.split('/')
+                    relative_parts = relative_topic.split('/')
+                    
+                    if len(topic_parts) != len(relative_parts):
+                        continue
+                    
+                    match = True
+                    for i, part in enumerate(topic_parts):
+                        if part != '+' and part != relative_parts[i]:
+                            match = False
+                            break
+                    
+                    if match:
+                        callback(relative_topic, payload)
+                        break
+                
+                # Exakte Übereinstimmung
+                elif subscribed_topic == relative_topic:
+                    callback(relative_topic, payload)
+                    break
+                
+        except Exception as e:
+            self.logger.error(f"Fehler bei der Verarbeitung der MQTT-Nachricht: {e}")
+    
+    def _restore_subscriptions(self) -> None:
+        """Stellt alle gespeicherten Subscriptions wieder her."""
+        for topic in self.subscriptions.keys():
+            full_topic = f"{self.base_topic}/{topic}"
+            result = self.client.subscribe(full_topic)
+            
+            if result[0] == mqtt.MQTT_ERR_SUCCESS:
+                if self.config.get_value("logging.mqtt.process", False):
+                    self.logger.debug(f"MQTT-Topic wiederhergestellt: {full_topic}")
+            else:
+                self.logger.error(f"Fehler beim Wiederherstellen des MQTT-Topics: {mqtt.error_string(result[0])}")
+    
+    def _handle_connection_failure(self) -> None:
+        """Behandelt einen Verbindungsfehler und passt das Reconnect-Delay an."""
+        # Erhöht das Reconnect-Delay exponentiell bis zum Maximum
+        self.reconnect_delay = min(self.reconnect_delay * 2, self.reconnect_max_delay)
+        self.logger.debug(f"Reconnect-Delay auf {self.reconnect_delay} Sekunden erhöht")

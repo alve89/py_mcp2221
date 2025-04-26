@@ -1,5 +1,5 @@
 # cli_interface.py
-# Version: 1.8.1
+# Version: 2.0.0
 
 import time
 import os
@@ -39,6 +39,8 @@ def run_cli_sensor_tests(controller, config, key_mappings):
         for idx, sid in enumerate(sensor_ids):
             print(f"{idx + 1}: Live-Poll {sid}")
         print("a: Alle Sensoren live-pollen")
+        print("f: Force-Update für alle Sensoren ausführen")
+        print("c: Cover-Zustände aktualisieren")
         print("q: Zurück zum Hauptmenü")
 
         try:
@@ -49,6 +51,10 @@ def run_cli_sensor_tests(controller, config, key_mappings):
                 break
             elif choice.lower() == 'a':
                 run_live_polling_all_sensors(controller, cli_poll_interval)
+            elif choice.lower() == 'f':
+                force_update_all_sensors(controller)
+            elif choice.lower() == 'c':
+                update_all_covers(controller)
             elif choice.isdigit():
                 idx = int(choice) - 1
                 if 0 <= idx < len(sensor_ids):
@@ -58,11 +64,70 @@ def run_cli_sensor_tests(controller, config, key_mappings):
                 else:
                     print("❌ Ungültige Auswahl.")
             else:
-                print("❌ Bitte eine Zahl, 'a' oder 'q' eingeben.")
+                print("❌ Bitte eine Zahl, 'a', 'f', 'c' oder 'q' eingeben.")
         except KeyboardInterrupt:
             print("\nAbbruch – zurück zum Hauptmenü.")
             print_main_menu(key_mappings)
             break
+
+def force_update_all_sensors(controller):
+    """Führt ein Force-Update für alle Sensoren durch"""
+    print("\nForce-Update für alle Sensoren:")
+    
+    for sensor_id, sensor in controller.sensors.items():
+        if hasattr(sensor, "force_update"):
+            try:
+                old_state = sensor.state
+                new_state = sensor.force_update()
+                color = 'green' if new_state else 'red'
+                change_info = "" if old_state == new_state else f" (Änderung von {old_state})"
+                print(f"{sensor_id}: Force-Update durchgeführt, State=" + colored(str(new_state), color) + change_info)
+            except Exception as e:
+                print(f"Fehler bei {sensor_id}: {e}")
+        else:
+            print(f"{sensor_id}: Force-Update nicht unterstützt")
+    
+    # Warte kurz für Benutzerrückmeldung
+    input("\nForce-Update abgeschlossen. Drücke Enter zum Fortfahren...")
+
+def update_all_covers(controller):
+    """Aktualisiert alle Cover-Zustände basierend auf aktuellen Sensordaten"""
+    print("\nAktualisiere alle Cover-Zustände:")
+    
+    if not controller.covers:
+        print("Keine Cover-Entities gefunden.")
+        input("\nDrücke Enter zum Fortfahren...")
+        return
+    
+    for cover_id, cover in controller.covers.items():
+        # Aktuelle Cover-Daten anzeigen
+        old_state = cover.state
+        print(f"{cover_id}: Aktueller Zustand={old_state}, "
+              f"Sensoren: open={cover.sensor_open_state}, closed={cover.sensor_closed_state}")
+    
+    # Cover-Zustände initialisieren
+    if hasattr(controller, "initialize_covers"):
+        controller.initialize_covers()
+        print("\nCover-Initialisierung durchgeführt.")
+    
+    # Zeige aktualisierte Zustände
+    print("\nNeue Cover-Zustände:")
+    for cover_id, cover in controller.covers.items():
+        new_state = cover.state
+        color = 'green' if new_state == "open" else ('red' if new_state == "closed" else 'yellow')
+        print(f"{cover_id}: Zustand=" + colored(str(new_state), color) + 
+              f", Sensoren: open={cover.sensor_open_state}, closed={cover.sensor_closed_state}")
+    
+    # MQTT-Update, falls verfügbar
+    if controller.mqtt_handler and hasattr(controller.mqtt_handler, "force_publish_all_cover_states"):
+        try:
+            controller.mqtt_handler.force_publish_all_cover_states()
+            print("\nMQTT-Update für alle Cover durchgeführt.")
+        except Exception as e:
+            print(f"\nFehler beim MQTT-Update: {e}")
+    
+    # Warte kurz für Benutzerrückmeldung
+    input("\nCover-Update abgeschlossen. Drücke Enter zum Fortfahren...")
 
 def run_live_polling_all_sensors(controller, poll_interval):
     """Führt Live-Polling für alle Sensoren durch, beendbar mit 'q'"""
@@ -143,12 +208,22 @@ def execute_system_command(command, controller, mqtt_handler=None, config=None):
             if actor:
                 state = actor.state
                 logger.info(f"  - {actor_id}: {state}")
+                
+        # Cover-Status explizit anzeigen
+        if controller.covers:
+            logger.info("Cover-Status:")
+            for cover_id, cover in controller.covers.items():
+                logger.info(f"  - {cover_id}: {cover.state} "
+                          f"(Sensoren: open={cover.sensor_open_state}, closed={cover.sensor_closed_state})")
+                
         logger.info("Systemdiagnose abgeschlossen.")
 
         while True:
             print("\n--- Diagnose-Menü ---")
             print("c: Konfiguration anzeigen")
             print("l: Live-Logging anzeigen")
+            print("f: Force-Update für alle Sensoren ausführen")
+            print("r: Alle Zustände neu veröffentlichen")
             print("q: Zurück zum Hauptmenü")
             sub = input("Auswahl: ").strip().lower()
             if sub == 'q':
@@ -157,6 +232,22 @@ def execute_system_command(command, controller, mqtt_handler=None, config=None):
             elif sub == 'c':
                 print("\n[Gesamte Konfiguration]")
                 pprint.pprint(config)
+            elif sub == 'f':
+                # Force-Update für alle Sensoren
+                force_update_all_sensors(controller)
+                # Cover-Status aktualisieren
+                update_all_covers(controller)
+            elif sub == 'r':
+                # Alle Zustände neu veröffentlichen
+                if mqtt_handler and hasattr(mqtt_handler, 'refresh_all_states'):
+                    try:
+                        print("Veröffentliche alle Zustände neu...")
+                        mqtt_handler.refresh_all_states()
+                        print("Alle Zustände wurden neu veröffentlicht.")
+                    except Exception as e:
+                        print(f"Fehler beim Neuveröffentlichen der Zustände: {e}")
+                else:
+                    print("MQTT-Handler nicht verfügbar oder unterstützt diese Funktion nicht.")
             elif sub == 'l':
                 print("\n[Info] Live-Logging ist aktiviert gemäß 'debugging.level' in config.yaml.")
                 
@@ -306,6 +397,13 @@ def execute_system_command(command, controller, mqtt_handler=None, config=None):
                         except Exception as e:
                             logger.error(f"[Sensor] Fehler beim Polling von {sensor_id}: {e}")
                 
+                # Cover-Status explizit ausgeben
+                if controller.covers:
+                    logger.info("Cover-Status für Debug-Ausgaben:")
+                    for cover_id, cover in controller.covers.items():
+                        logger.debug(f"[Cover] {cover_id}: State={cover.state}, "
+                                     f"Sensoren: open={cover.sensor_open_state}, closed={cover.sensor_closed_state}")
+                
                 # Aktivere Polling-Schleife, die auch MQTT-Events und Controller-Status prüft
                 print(colored("Drücke q + Enter zum Beenden, eine andere Taste für eine Log-Nachricht", "cyan"))
                 try:
@@ -327,6 +425,11 @@ def execute_system_command(command, controller, mqtt_handler=None, config=None):
                             # Prüfe Controller-Status
                             actor_states = {aid: actor.state for aid, actor in controller.actors.items()}
                             logger.debug(f"Aktor-Status: {actor_states}")
+                            
+                            # Cover-Status
+                            if controller.covers:
+                                cover_states = {cid: cover.state for cid, cover in controller.covers.items()}
+                                logger.debug(f"Cover-Status: {cover_states}")
                             
                             # Aktives Polling aller Sensoren alle 10 Sekunden
                             for sensor_id, sensor in controller.sensors.items():
@@ -393,7 +496,7 @@ def custom_event_handler(event, controller, mqtt_handler, config, key_mappings):
     elif event.target == 'system' and event.action == 'control':
         toggle_actors = [
             aid for aid, cfg in config['actors'].items()
-            if cfg.get('entity_type', 'switch').lower() in ['switch', 'lock']
+            if cfg.get('entity_type', 'switch').lower() in ['switch', 'lock', 'cover']
         ]
         if not toggle_actors:
             print("Keine Aktoren mit toggle-Funktion vorhanden.")
@@ -402,7 +505,16 @@ def custom_event_handler(event, controller, mqtt_handler, config, key_mappings):
         while True:
             print("\n--- Control Menü: Toggle-Aktoren ---")
             for idx, aid in enumerate(toggle_actors):
-                print(f"{idx + 1}: Toggle {aid}")
+                entity_type = config['actors'][aid].get('entity_type', 'switch').lower()
+                
+                # Aktuellen Zustand anzeigen für Cover
+                if entity_type == 'cover' and aid in controller.covers:
+                    cover_state = controller.covers[aid].state
+                    state_display = f" (aktuell: {cover_state})"
+                else:
+                    state_display = ""
+                
+                print(f"{idx + 1}: Toggle {aid} ({entity_type}{state_display})")
             print("q: Zurück zum Hauptmenü")
 
             try:
@@ -415,8 +527,33 @@ def custom_event_handler(event, controller, mqtt_handler, config, key_mappings):
                     index = int(choice) - 1
                     if 0 <= index < len(toggle_actors):
                         selected = toggle_actors[index]
-                        controller._handle_event(InputEvent('input', 'toggle', selected))
-                        print(f"[OK] {selected} getoggelt.")
+                        entity_type = config['actors'][selected].get('entity_type', 'switch').lower()
+                        
+                        # Aktuelle Zustände vor dem Toggle anzeigen
+                        if entity_type == 'cover' and selected in controller.covers:
+                            cover = controller.covers[selected]
+                            print(f"\nAktueller Cover-Zustand vor Toggle: {cover.state}")
+                            print(f"Sensoren vor Toggle: open={cover.sensor_open_state}, closed={cover.sensor_closed_state}")
+                        
+                        # Aktiviere Debug-Ausgaben für diesen Toggle-Vorgang
+                        print(f"\n--- Debug-Ausgaben für Toggle von {selected} ---")
+                        if entity_type == 'cover':
+                            # Spezielles Cover-Handling
+                            cover_event = InputEvent('input', 'toggle', selected)
+                            controller._handle_event(cover_event)
+                            print(f"[OK] Cover {selected} getoggelt.")
+                            
+                            # Warte kurz und zeige den neuen Zustand
+                            time.sleep(0.5)
+                            if selected in controller.covers:
+                                cover = controller.covers[selected]
+                                print(f"Neuer Cover-Zustand: {cover.state}")
+                                print(f"Sensoren nach Toggle: open={cover.sensor_open_state}, closed={cover.sensor_closed_state}")
+                        else:
+                            # Normales Actor-Handling
+                            controller._handle_event(InputEvent('input', 'toggle', selected))
+                            print(f"[OK] {selected} getoggelt.")
+                        print("--- Ende der Debug-Ausgaben ---\n")
                     else:
                         print("❌ Ungültige Auswahl.")
                 else:

@@ -1,5 +1,5 @@
 # mqtt_handler/states.py
-# Version: 1.6.0
+# Version: 1.7.0
 
 import threading
 import time
@@ -112,7 +112,7 @@ class MQTTStatesMixin:
             if force_republish:
                 # Actors
                 for actor_id, actor_config in self.config['actors'].items():
-                    entity_type = actor_config.get('entity_type', 'switch')
+                    entity_type = actor_config.get('entity_type', 'switch').lower()
                     discovery_config = EntityTypeConfig.get_discovery_config(entity_type)
                     
                     # Status-Topic für alle Entities
@@ -129,14 +129,28 @@ class MQTTStatesMixin:
                     # State-Topic nur für Entities mit State (aber NICHT command republizieren)
                     if discovery_config.get('state_topic'):
                         state_topic = f"{self.base_topic}/{actor_id}/state"
-                        state_str = self._convert_internal_to_state(actor_id, False)
-                        self.mqtt_client.publish(
-                            state_topic,
-                            state_str,
-                            qos=1,
-                            retain=True
-                        )
-                        self.debug_send_msg(state_topic, state_str, retained=True, qos=1)
+                        
+                        # Spezialfall für Cover-Entities
+                        if entity_type == 'cover':
+                            # Für Cover den Standard-Zustand setzen (meist "closed")
+                            state_str = actor_config.get('startup_state', 'closed')
+                            self.mqtt_client.publish(
+                                state_topic,
+                                state_str,
+                                qos=1,
+                                retain=True
+                            )
+                            self.debug_send_msg(state_topic, state_str, retained=True, qos=1)
+                        else:
+                            # Für normale Entities den internen Boolean-State verwenden
+                            state_str = self._convert_internal_to_state(actor_id, False)
+                            self.mqtt_client.publish(
+                                state_topic,
+                                state_str,
+                                qos=1,
+                                retain=True
+                            )
+                            self.debug_send_msg(state_topic, state_str, retained=True, qos=1)
 
                 # Sensoren
                 if 'sensors' in self.config:
@@ -247,10 +261,15 @@ class MQTTStatesMixin:
                     entity_type = actor_config.get('entity_type', 'switch')
                     startup_state = actor_config.get('startup_state', 'OFF')
                     
-                    # Konvertiere startup_state in internen Boolean basierend auf Entity Type
-                    self.restored_states[actor_id] = EntityTypeConfig.convert_startup_state(
-                        entity_type, startup_state
-                    )
+                    # Spezialbehandlung für Cover
+                    if entity_type.lower() == 'cover':
+                        # Für Cover speichern wir den Startup-State als String
+                        self.restored_states[actor_id] = startup_state
+                    else:
+                        # Konvertiere startup_state in internen Boolean basierend auf Entity Type
+                        self.restored_states[actor_id] = EntityTypeConfig.convert_startup_state(
+                            entity_type, startup_state
+                        )
                     
                     self.debug_process_msg(f"Default State für {actor_id}: {startup_state}")
                     
@@ -272,6 +291,13 @@ class MQTTStatesMixin:
             
         actor_config = self.config['actors'][actor_id]
         entity_type = actor_config.get('entity_type', 'switch')
+        
+        # Spezialbehandlung für Cover
+        if entity_type.lower() == 'cover':
+            # Für Cover wird der Zustand durch die Sensoren bestimmt,
+            # daher ist kein initialer State erforderlich
+            return False
+            
         startup_state = actor_config.get('startup_state', 'OFF')
         
         if startup_state == 'restore' and actor_id in self.restored_states:

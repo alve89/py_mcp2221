@@ -1,5 +1,5 @@
 # mqtt_handler/__init__.py
-# Version: 1.7.0
+# Version: 1.8.0
 
 import json
 from typing import Dict, Optional, Callable
@@ -51,6 +51,7 @@ class MQTTHandler(MQTTDebugMixin, MQTTBaseMixin, MQTTCallbacksMixin, MQTTDiscove
         
         # Sensoren und Callbacks
         self._sensors = {}
+        self._controller = None  # Referenz zum Controller für Cross-Updates
         self.command_callbacks = {}
         
         # MQTT Client Setup
@@ -94,3 +95,20 @@ class MQTTHandler(MQTTDebugMixin, MQTTBaseMixin, MQTTCallbacksMixin, MQTTDiscove
         """Setzt die Sensor-Objekte für State-Updates"""
         self._sensors = sensors
         self.debug_process_msg(f"{len(sensors)} Sensoren für MQTT-Integration registriert")
+        
+    def set_controller(self, controller):
+        """Setzt die Referenz zum Controller für Cross-Updates"""
+        self._controller = controller
+        self.debug_process_msg("Controller-Referenz für MQTT-Handler gesetzt")
+        
+    def refresh_all_states(self):
+        """Aktualisiert alle Zustände (Sensoren, Cover, Aktoren)"""
+        # Sensor-Zustände aktualisieren
+        self.force_publish_all_sensor_states()
+        
+        # Cover-Zustände aktualisieren
+        if hasattr(self, 'force_publish_all_cover_states'):
+            self.force_publish_all_cover_states()
+        
+        # Board- und Service-Status aktualisieren
+        self.publish_all_states(force_republish=True)

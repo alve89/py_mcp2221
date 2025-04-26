@@ -1,5 +1,5 @@
 # mqtt_config.py
-# Version: 1.2.0
+# Version: 1.3.0
 
 class EntityTypeConfig:
     """Konfigurationsklasse für Entity Types"""
@@ -71,6 +71,38 @@ class EntityTypeConfig:
                 'unlocked': True,   # "UNLOCKED" Startup-State setzt internen Value auf True
                 'LOCKED': False,
                 'UNLOCKED': True
+            }
+        },
+        'cover': {
+            'discovery_type': 'cover',
+            'states': {
+                'open': 'open',
+                'closed': 'closed',
+                'opening': 'opening',
+                'closing': 'closing'
+            },
+            'commands': {
+                'OPEN': 'OPEN',
+                'CLOSE': 'CLOSE',
+                'STOP': 'STOP'
+            },
+            'discovery_config': {
+                'state_topic': True,
+                'command_topic': True,
+                'state_opening': 'opening',
+                'state_closing': 'closing',
+                'state_open': 'open',
+                'state_closed': 'closed',
+                'payload_open': 'OPEN',
+                'payload_close': 'CLOSE',
+                'payload_stop': 'STOP',
+                'optimistic': False
+            },
+            'startup_state_map': {
+                'open': 'open',
+                'closed': 'closed',
+                'opening': 'opening',
+                'closing': 'closing'
             }
         },
         'binary_sensor': {

@@ -1,5 +1,5 @@
 # mqtt_handler/discovery.py
-# Version: 1.5.0
+# Version: 1.6.0
 
 import json
 import os
@@ -110,6 +110,15 @@ class MQTTDiscoveryMixin:
             # Weitere Discovery-Konfiguration
             payload.update({k: v for k, v in discovery_config.items() 
                           if k not in ['state_topic', 'command_topic']})
+            
+            # Spezifische Konfiguration für Cover-Entitäten
+            if entity_type == 'cover':
+                # Device-Klasse für Cover (z.B. garage, door, blind, ...)
+                if 'device_class' in actor_config:
+                    payload["device_class"] = actor_config['device_class']
+                
+                # Sensoren können hinzugefügt werden, sind aber nicht notwendig
+                # für die HA-Discovery, da die Zustandsbestimmung intern erfolgt
             
             # Debug-Ausgabe generieren für vollständige Konfiguration
             self.debug_process_msg(f"Discovery-Konfiguration für {actor_id} ({entity_type})")

@@ -1,57 +1,21 @@
 # main.py
-# Version: 3.7.0
+# Version: 5.0.0
 
 import os
 import time
 import yaml
 import sys
 import logging
-from mcp2221_io.logging_config import logger, set_debug_mode
-from mcp2221_io import IOController, Actor, Sensor, SimpleInputHandler, InputEvent
-from mcp2221_io.virtual_sensor import VirtualSensor
+from mcp2221_io.logging_config import logger, LogCategory, set_debug_mode, set_logging_level_from_config
+from mcp2221_io import IOController, Actor, Sensor, SimpleInputHandler, InputEvent, VirtualSensor
 from mcp2221_io.mqtt_handler import MQTTHandler
-from mcp2221_io.cli_interface import execute_system_command, custom_event_handler, run_cli_sensor_tests
+from mcp2221_io.io_cover import Cover, CoverState
+from mcp2221_io.cli_interface import execute_system_command, custom_event_handler, print_main_menu
 
-def direct_print(message):
-    """Direktes Ausgeben von Meldungen ohne Logger"""
-    print(message)
-
-def set_logging_level_from_config(config, cli_debug_mode=False):
-    """
-    Setzt das Logging-Level basierend auf der Konfiguration
-    
-    :param config: Die Konfiguration
-    :param cli_debug_mode: Ob der CLI-Debug-Modus aktiv ist (z.B. Diagnose-Menü)
-    """
-    # Debug-Konfiguration nur überschreiben, wenn nicht im CLI-Debug-Modus
-    if not cli_debug_mode:
-        # Im normalen Betrieb bestimmte Debug-Ausgaben unterdrücken für bessere Performance
-        config['debugging']['system']['entities']['actors'] = False
-        config['debugging']['system']['entities']['sensors'] = False
-        config['debugging']['system']['process'] = False
-    
-    level_str = config.get("debugging", {}).get("level", "DEBUG").upper()
-    level_map = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-        "NONE": logging.CRITICAL + 10
-    }
-    level = level_map.get(level_str, logging.DEBUG)
-    logger.setLevel(level)
-    
-    # Debug-Modus aus Konfiguration setzen
-    debug_mode = config.get("debugging", {}).get("mqtt", {}).get("process", False)
-    if debug_mode:
-        set_debug_mode(True)
-    else:
-        set_debug_mode(False)
-    
-    if level > logging.DEBUG:
-        logging.getLogger("mcp2221_io").propagate = False
+from termcolor import colored
 
 def load_config(config_path='config.yaml'):
+    """Lädt die Konfiguration aus einer YAML-Datei"""
     if os.path.exists(config_path):
         config_file = config_path
     else:
@@ -61,12 +25,12 @@ def load_config(config_path='config.yaml'):
             example_config = os.path.join(package_dir, 'config.example.yaml')
             if os.path.exists(example_config):
                 import shutil
-                direct_print(f"Keine config.yaml gefunden, kopiere example config nach {config_file}")
+                logger.info(f"Keine config.yaml gefunden, kopiere example config nach {config_file}", LogCategory.SYSTEM)
                 shutil.copy2(example_config, config_file)
             else:
                 raise FileNotFoundError(f"Weder config.yaml noch config.example.yaml gefunden in {package_dir}")
 
-    direct_print(f"Lade Konfiguration aus {config_file}")
+    logger.info(f"Lade Konfiguration aus {config_file}", LogCategory.SYSTEM)
     try:
         with open(config_file, 'r') as file:
             config = yaml.safe_load(file)
@@ -76,17 +40,26 @@ def load_config(config_path='config.yaml'):
                     config['mqtt']['sensors'] = config['sensors']
             return config
     except Exception as e:
-        logger.error(f"Fehler beim Laden der Konfiguration: {e}")
+        logger.error(f"Fehler beim Laden der Konfiguration: {e}", LogCategory.SYSTEM)
         raise
 
-def setup_actors(controller, actor_config, debug_config={}):
-    direct_print("Konfiguriere Aktoren")
+def setup_actors(controller, actor_config, sensor_config=None, debug_config={}):
+    """Konfiguriert Aktoren basierend auf der Konfiguration"""
+    logger.info("Konfiguriere Aktoren", LogCategory.SYSTEM)
+    covers = {}
+
     for name, cfg in actor_config.items():
         try:
             reset_delay = 0.0
             entity_type = cfg.get('entity_type', 'switch').lower()
-            if entity_type == 'button' or ((entity_type in ['switch', 'lock']) and cfg.get('auto_reset', False)):
+
+            if entity_type == 'cover':
+                covers[name] = cfg
+                logger.info(f"  - {name} (Cover, Pin {cfg['pin']}, inverted: {cfg.get('inverted', False)})", LogCategory.SYSTEM)
+
+            if entity_type == 'button' or ((entity_type in ['switch', 'lock', 'cover']) and cfg.get('auto_reset', False)):
                 reset_delay = float(cfg.get('reset_delay', 0.0))
+
             actor = Actor(
                 cfg['pin'],
                 inverted=cfg.get('inverted', False),
@@ -94,17 +67,22 @@ def setup_actors(controller, actor_config, debug_config={}):
                 debug_config=debug_config
             )
             controller.add_actor(name, actor)
-            direct_print(f"  - {name} (Pin {cfg['pin']}, inverted: {cfg.get('inverted', False)}, Typ: {entity_type})")
+
+            if entity_type != 'cover':
+                logger.info(f"  - {name} (Pin {cfg['pin']}, inverted: {cfg.get('inverted', False)}, Typ: {entity_type})", LogCategory.SYSTEM)
         except Exception as e:
-            logger.error(f"Fehler beim Konfigurieren von Actor {name}: {e}")
+            logger.error(f"Fehler beim Konfigurieren von Actor {name}: {e}", LogCategory.SYSTEM)
             raise
 
+    return covers
+
 def setup_sensors(controller, sensor_config, debug_config={}):
+    """Konfiguriert Sensoren basierend auf der Konfiguration"""
     if not sensor_config:
-        direct_print("Keine Sensoren in der Konfiguration gefunden")
+        logger.info("Keine Sensoren in der Konfiguration gefunden", LogCategory.SYSTEM)
         return
 
-    direct_print(f"Konfiguriere {len(sensor_config)} Sensoren")
+    logger.info(f"Konfiguriere {len(sensor_config)} Sensoren", LogCategory.SYSTEM)
     for name, cfg in sensor_config.items():
         try:
             sensor_type = cfg.get('sensor_type', '').upper()
@@ -115,7 +93,8 @@ def setup_sensors(controller, sensor_config, debug_config={}):
                     cfg['pin'],
                     inverted=inverted,
                     poll_interval=poll_interval,
-                    debug_config=debug_config
+                    debug_config=debug_config,
+                    name=name  # Setze den Sensornamen hier!
                 )
                 if 'debounce_time' in cfg:
                     sensor.set_debounce_time(float(cfg['debounce_time']))
@@ -123,168 +102,174 @@ def setup_sensors(controller, sensor_config, debug_config={}):
                     stable_readings = int(cfg.get('stable_readings', 3))
                     sensor.set_stable_readings(stable_readings)
                 controller.add_sensor(name, sensor)
-                direct_print(f"  - {name} (Pin {cfg['pin']}, inverted: {inverted}, Typ: {cfg.get('entity_type', 'binary')})")
+                logger.info(f"  - {name} (Pin {cfg['pin']}, inverted: {inverted}, Typ: {cfg.get('entity_type', 'binary')})", LogCategory.SYSTEM)
             elif sensor_type == "VIRTUAL":
                 inverted = cfg.get('inverted', False)
                 sensor = VirtualSensor(name, inverted=inverted, debug_config=debug_config)
                 controller.add_sensor(name, sensor)
-                direct_print(f"  - {name} (virtuell, Typ: {cfg.get('entity_type', 'binary')})")
+                logger.info(f"  - {name} (virtuell, Typ: {cfg.get('entity_type', 'binary')})", LogCategory.SYSTEM)
             else:
-                direct_print(f"  - {name}: Unbekannter Sensor-Typ: {sensor_type}")
+                logger.info(f"  - {name}: Unbekannter Sensor-Typ: {sensor_type}", LogCategory.SYSTEM)
         except Exception as e:
-            logger.error(f"Fehler beim Konfigurieren von Sensor {name}: {e}")
+            logger.error(f"Fehler beim Konfigurieren von Sensor {name}: {e}", LogCategory.SYSTEM)
             raise
 
+def setup_covers(controller, covers, debug_config={}):
+    """Konfiguriert Cover basierend auf der Konfiguration"""
+    if not covers:
+        return
+
+    logger.info(f"Konfiguriere {len(covers)} Cover-Entitäten", LogCategory.SYSTEM)
+    for name, cfg in covers.items():
+        try:
+            if name not in controller.actors:
+                logger.error(f"Aktor für Cover {name} nicht gefunden", LogCategory.COVER)
+                continue
+
+            actor = controller.actors[name]
+            sensor_open_id = cfg.get('sensor_open')
+            sensor_closed_id = cfg.get('sensor_closed')
+
+            if sensor_open_id and sensor_open_id not in controller.sensors:
+                logger.error(f"Sensor {sensor_open_id} für Cover {name} (open) nicht gefunden", LogCategory.COVER)
+                sensor_open_id = None
+
+            if sensor_closed_id and sensor_closed_id not in controller.sensors:
+                logger.error(f"Sensor {sensor_closed_id} für Cover {name} (closed) nicht gefunden", LogCategory.COVER)
+                sensor_closed_id = None
+
+            cover = Cover(
+                actor,
+                sensor_open_id=sensor_open_id,
+                sensor_closed_id=sensor_closed_id,
+                inverted=cfg.get('inverted', False),
+                debug_config=debug_config
+            )
+
+            controller.add_cover(name, cover, sensor_open_id, sensor_closed_id)
+
+            logger.info(f"  - Cover {name} konfiguriert mit Sensoren: open={sensor_open_id}, closed={sensor_closed_id}", LogCategory.SYSTEM)
+
+        except Exception as e:
+            logger.error(f"Fehler beim Konfigurieren von Cover {name}: {e}", LogCategory.COVER)
+            logger.info(f"  - Fehler bei Cover {name}: {e}", LogCategory.SYSTEM)
+
 def setup_key_mappings(key_config):
-    direct_print("Konfiguriere Key-Mappings")
+    """Konfiguriert Key-Mappings für Tastaturbefehle"""
+    logger.info("Konfiguriere Key-Mappings", LogCategory.SYSTEM)
     mappings = {}
     for key, cfg in key_config.items():
-        mappings[key] = (cfg['target'], cfg['action'], None)
+        if isinstance(cfg, dict):
+            target = cfg.get('target', 'unknown')
+            action = cfg.get('action', 'unknown')
+            value = cfg.get('value', None)
+            mappings[key] = (target, action, value)
+        else:
+            logger.warning(f"Ungültiges Key-Mapping-Format für Taste {key}: {cfg}", LogCategory.SYSTEM)
     return mappings
 
-def reset_actors_to_default(controller, config, mqtt_handler=None):
-    direct_print("Setze Aktoren auf Standardwerte zurück")
-    for actor_id, actor_config in config['actors'].items():
-        try:
-            if actor_id in controller.actors:
-                entity_type = actor_config.get('entity_type', 'switch').lower()
-                if entity_type == 'switch':
-                    default_state = actor_config.get('startup_state', 'off').lower() == 'on'
-                    if mqtt_handler:
-                        mqtt_handler.publish_command(actor_id, "ON" if default_state else "OFF")
-                        time.sleep(0.1)
-                direct_print(f"  - {actor_id} zurückgesetzt")
-        except Exception as e:
-            logger.error(f"Fehler beim Zurücksetzen von {actor_id}: {e}")
-
-def stop_sensors(controller):
-    direct_print("Stoppe Sensoren")
-    for name, sensor in controller.sensors.items():
-        try:
-            if hasattr(sensor, "stop_polling"):
-                sensor.stop_polling()
-            direct_print(f"  - {name} gestoppt")
-        except Exception as e:
-            logger.error(f"Fehler beim Stoppen von Sensor {name}: {e}")
-
 def main():
-    global key_mappings
-    direct_print("Starte Hauptprogramm")
-    config = load_config()
+    """Hauptfunktion des Programms"""
+    logger.info("Starte Hauptprogramm", LogCategory.SYSTEM)
     
-    # Standardmäßig normalen Debug-Modus verwenden
-    cli_debug_mode = False
+    # Konfiguration laden
+    config = load_config()
+
+    # Debug-Modus für bessere Diagnose konfigurieren
+    cli_debug_mode = True
     set_logging_level_from_config(config, cli_debug_mode)
     debug_config = config.get('debugging', {})
 
+    # Controller initialisieren
     controller = IOController(debug_config=debug_config)
-    setup_actors(controller, config['actors'], debug_config)
-    setup_sensors(controller, config.get('sensors', {}), debug_config)
-    key_mappings = setup_key_mappings(config['key_mappings'])
 
+    # Komponenten konfigurieren
+    covers = setup_actors(controller, config['actors'], config.get('sensors', {}), debug_config)
+    setup_sensors(controller, config.get('sensors', {}), debug_config)
+
+    # Force-Update für alle Sensoren nach der Initialisierung
+    logger.info("Führe Initial-Update für alle Sensoren durch", LogCategory.SYSTEM)
+    for sensor_id, sensor in controller.sensors.items():
+        if hasattr(sensor, 'force_update'):
+            try:
+                state = sensor.force_update()
+                logger.info(f"  - Initialer Zustand für {sensor_id}: {state}", LogCategory.SENSOR)
+            except Exception as e:
+                logger.error(f"Fehler beim Initial-Update von Sensor {sensor_id}: {e}", LogCategory.SENSOR)
+
+    # MQTT-Handler initialisieren, wenn konfiguriert
     mqtt_handler = None
     if 'mqtt' in config:
         try:
-            # Explizit debug_config übergeben
             mqtt_handler = MQTTHandler(config['mqtt'], debug_config=debug_config)
             mqtt_handler.set_sensors(controller.sensors)
+            logger.info(f"Konfiguriere MQTT (Host: {config['mqtt'].get('broker')}, Port: {config['mqtt'].get('port', 1883)})", LogCategory.MQTT)
+
+            # Verbindung vor dem Setzen des MQTT-Handlers herstellen
+            mqtt_handler.connect()
+            logger.info(f"MQTT-Verbindung erfolgreich hergestellt zu {config['mqtt'].get('broker')}", LogCategory.MQTT)
+            
+            # Controller im MQTT-Handler registrieren
+            if hasattr(mqtt_handler, 'set_controller'):
+                mqtt_handler.set_controller(controller)
+                logger.info("Controller im MQTT-Handler registriert", LogCategory.MQTT)
+
+            # Jetzt den MQTT-Handler setzen (dabei werden Callbacks registriert)
             controller.set_mqtt_handler(mqtt_handler)
-            direct_print(f"Konfiguriere MQTT (Host: {config['mqtt'].get('broker')}, Port: {config['mqtt'].get('port', 1883)})")
-            
-            # Verbindung mit Retry-Logik
-            max_retries = 3
-            retry_delay = 5  # Sekunden
-            connected = False
-            
-            for retry in range(max_retries):
-                try:
-                    mqtt_handler.connect()
-                    connected = True
-                    direct_print(f"MQTT-Verbindung erfolgreich hergestellt zu {config['mqtt'].get('broker')}")
-                    break
-                except Exception as e:
-                    if retry < max_retries - 1:
-                        direct_print(f"MQTT-Verbindung fehlgeschlagen (Versuch {retry+1}/{max_retries}): {str(e)}")
-                        direct_print(f"Neuer Verbindungsversuch in {retry_delay} Sekunden...")
-                        time.sleep(retry_delay)
-                    else:
-                        direct_print(f"MQTT konnte nicht initialisiert werden nach {max_retries} Versuchen: {str(e)}")
-            
-            if connected:
-                if hasattr(mqtt_handler, 'force_publish_all_sensor_states'):
-                    time.sleep(1)
-                    # Umgebungsvariable temporär setzen, um Debug-Ausgaben zu unterdrücken
-                    old_debug = os.environ.get('MCP2221_DEBUG', '0')
-                    os.environ['MCP2221_DEBUG'] = '0'
-                    mqtt_handler.force_publish_all_sensor_states()
-                    if hasattr(mqtt_handler, 'test_sensor_pins'):
-                        mqtt_handler.test_sensor_pins()
-                    # Zurücksetzen der Umgebungsvariable
-                    os.environ['MCP2221_DEBUG'] = old_debug
-                mqtt_handler.start_board_monitoring()
-                direct_print("MQTT Board-Monitoring gestartet")
-            else:
-                mqtt_handler = None
-                direct_print("MQTT nicht verfügbar - System läuft im Standalone-Modus")
-                
+
         except Exception as e:
-            direct_print(f"MQTT konnte nicht initialisiert werden: {str(e)}")
-            logger.warning(f"MQTT konnte nicht initialisiert werden: {e}")
+            logger.error(f"MQTT konnte nicht initialisiert werden: {str(e)}", LogCategory.MQTT)
             mqtt_handler = None
-            direct_print("MQTT nicht verfügbar - System läuft im Standalone-Modus")
 
-    # Erweiterter Event-Handler für CLI-Modi
-    def cli_event_handler(event):
-        # Bei speziellen Diagnose-Events temporär den CLI-Debug-Modus aktivieren
-        if event.target == 'system' and event.action == 'diagnose':
-            nonlocal cli_debug_mode
-            # Debug-Konfiguration für CLI-Modus aktivieren
-            cli_debug_mode = True
-            set_logging_level_from_config(config, cli_debug_mode)
-            try:
-                custom_event_handler(event, controller, mqtt_handler, config, key_mappings)
-            finally:
-                # Zurück zum normalen Debug-Modus
-                cli_debug_mode = False
-                set_logging_level_from_config(config, cli_debug_mode)
-        else:
-            # Normale Event-Verarbeitung
-            custom_event_handler(event, controller, mqtt_handler, config, key_mappings)
+    # Setup covers erst nach MQTT-Setup, damit die Zustandsänderungen korrekt publiziert werden
+    setup_covers(controller, covers, debug_config)
 
+    # Wenn MQTT nicht verfügbar ist, können wir die Cover-Initialisierung hier noch manuell aufrufen
+    if not mqtt_handler and covers:
+        controller.initialize_covers()
+
+    # Key-Mappings konfigurieren
+    key_mappings = setup_key_mappings(config.get('key_mappings', {}))
+
+    # Input-Handler für Tastaturbefehle einrichten
     input_handler = SimpleInputHandler(key_mappings)
-    input_handler.observers = [cli_event_handler]
+    input_handler.observers = [lambda event: custom_event_handler(event, controller, mqtt_handler, config, key_mappings)]
     controller.add_input_handler(input_handler)
 
+    # Hauptmenü anzeigen
     print_main_menu(key_mappings)
 
     try:
+        # Controller starten
         controller.start()
+        
+        # Führe nach dem Start noch ein umfassendes Update aller Zustände durch
+        logger.info("Führe umfassendes Update aller Zustände nach Systemstart durch...", LogCategory.SYSTEM)
+        
+        # Erst Sensor-Test
+        if mqtt_handler:
+            mqtt_handler.test_sensor_pins()
+            # Warte kurz, damit die Sensor-Updates verarbeitet werden können
+            time.sleep(0.5)
+            # Dann Cover neu initialisieren (mit aktuellen Sensor-Werten)
+            controller.initialize_covers()
+            # Dann alle Zustände neu publizieren
+            mqtt_handler.refresh_all_states()
+        
+        logger.info("System ist bereit.", LogCategory.SYSTEM)
+        
+        # Haupt-Event-Loop
         while controller.running:
             time.sleep(0.05)
     except KeyboardInterrupt:
-        print("\nBeende Programm durch Tastendruck...")
+        logger.info("Beende Programm durch Tastendruck...", LogCategory.SYSTEM)
     finally:
+        # Aufräumen
         controller.stop()
-        stop_sensors(controller)
-        reset_actors_to_default(controller, config, mqtt_handler)
         if mqtt_handler:
-            try:
-                mqtt_handler.disconnect()
-                direct_print("MQTT-Verbindung getrennt")
-            except Exception as e:
-                logger.error(f"Fehler beim Stoppen des MQTT Handlers: {e}")
-        direct_print("System erfolgreich beendet")
-
-    return 0
-
-def print_main_menu(key_mappings):
-    print("System gestartet. Steuerung:")
-    for key, value in key_mappings.items():
-        if isinstance(value, dict):
-            print(f"  {key}: {value.get('action', '?').capitalize()} {value.get('target', '?')}")
-        elif isinstance(value, tuple) and len(value) >= 2:
-            print(f"  {key}: {value[1].capitalize()} {value[0]}")
-    print("\nBitte Taste eingeben und Enter drücken:")
+            mqtt_handler.disconnect()
+            logger.info("MQTT-Verbindung getrennt", LogCategory.MQTT)
+        logger.info("System erfolgreich beendet", LogCategory.SYSTEM)
 
 if __name__ == "__main__":
     main()

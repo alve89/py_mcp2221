@@ -1,5 +1,4 @@
 # io_device.py
-# Version: 1.6.3
 
 from enum import Enum, auto
 from typing import Optional, Callable
@@ -11,7 +10,6 @@ class IOMode(Enum):
     TOGGLE = auto()
 
 class IODevice:
-    """Basisklasse für alle IO-Geräte"""
     def __init__(self, pin: str, inverted: bool = False):
         """
         Initialisiert ein IO-Gerät
@@ -22,22 +20,19 @@ class IODevice:
         self._pin = pin
         self._inverted = inverted
         self._state: bool = False
-        
+        self._state_raw: bool = False
+
     @property
     def pin(self) -> str:
         """Gibt den Pin des Geräts zurück"""
         return self._pin
-    
+
     @property
     def state(self) -> bool:
-        """Gibt den aktuellen Zustand des Geräts zurück"""
-        return self._state
+        """Gibt den logischen Zustand des Geräts zurück"""
+        return not self._state if self._inverted else self._state 
     
-    def _apply_inversion(self, value: bool) -> bool:
-        """
-        Wendet Invertierung auf den Wert an
-        
-        :param value: Ursprünglicher Wert
-        :return: Möglicherweise invertierter Wert
-        """
-        return not value if self._inverted else value
+    @property
+    def state_raw(self) -> bool:
+        """Gibt den physischen Zustand des Geräts zurück"""
+        return self._state_raw

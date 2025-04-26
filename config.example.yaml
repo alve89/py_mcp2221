@@ -1,38 +1,73 @@
-# mcp2221_io/config.yaml
+# mcp2221_io/config.example.yaml
 
 # GPIO-Konfiguration
 actors:
-  relay1:
+  door_hintertuer:
     pin: G0
-    inverted: false
-    description: "Relais 1"
-    startup_state: "off"  # Mögliche Werte: on, off
-    entity_type: "switch"  # Optional: switch (default), button
-  button1:
+    inverted: true
+    description: "Hintertür"
+    startup_state: "LOCKED"  # Mögliche Werte: on, off
+    entity_type: "lock"  # Optional: switch (default), button
+    auto_reset: true  # Optional: Automatische Rückstellung aktivieren/deaktivieren
+    reset_delay: 4.0  # Optional: Rückstellzeit in Sekunden (nur wenn auto_reset: true)
+
+  door_garage:
     pin: G1
     inverted: true
-    description: "Button 1"
-    entity_type: "button"  # Optional: switch (default), button
-    reset_delay: 2.0  # Rückstellzeit in Sekunden, 0 für kein Zurücksetzen
+    description: "Garagentor"
+    startup_state: "closed"  # Nur relevant für die initiale Anzeige
+    entity_type: "cover"     # Entity-Typ: cover für Garagentor
+    device_class: "garage"   # Optional: garage, door, window, etc.
+    sensor_open: garage_open  # Sensor-ID für den offenen Zustand
+    sensor_closed: garage_closed  # Sensor-ID für den geschlossenen Zustand
+    auto_reset: true         # Automatische Rückstellung für Impulssteuerung
+    reset_delay: 2.0         # Rückstellzeit für den Impuls in Sekunden
+
+sensors:
+  garage_open:
+    sensor_type: "GPIO"
+    pin: G2
+    inverted: false  # false = 3.3V = HIGH = ON = Sensor aktiv
+    description: "Garagentor ist offen"
+    entity_type: "binary_sensor"
+    device_class: "garage_door"  # Passende Device-Klasse für Home Assistant
+    poll_interval: 0.02
+    debounce_time: 0.01  # Entprellzeit in Sekunden
+    stable_readings: 1   # Anzahl der stabilen Lesungen für State-Change
+
+  garage_closed:
+    sensor_type: "GPIO"
+    pin: G3
+    inverted: false  # false = 3.3V = HIGH = ON = Sensor aktiv
+    description: "Garagentor ist geschlossen"
+    entity_type: "binary_sensor"
+    device_class: "garage_door"  # Passende Device-Klasse für Home Assistant
+    poll_interval: 0.02
+    debounce_time: 0.01  # Entprellzeit in Sekunden
+    stable_readings: 1   # Anzahl der stabilen Lesungen für State-Change
 
 # Tastatur-Konfiguration
 key_mappings:
-  "1":
-    target: relay1
-    action: toggle
-  "2":
-    target: button1
-    action: toggle
+  # System-Befehle
+  "c":
+    target: system
+    action: control
+  "t":
+    target: system
+    action: test_sensors
+  "d":
+    target: system
+    action: diagnose
   "q":
     target: system
     action: quit
 
 # MQTT-Konfiguration
 mqtt:
-  broker: mqtt-broker.local  # Deine Home Assistant IP
+  broker: 192.168.1.10  # Deine Home Assistant IP
   port: 1883
-  username: MQTT_USER    # Optional
-  password: MQTT_PASSWORD    # Optional
+  username: mqtt_user    # Optional
+  password: mqtt_password    # Optional
   base_topic: mcp2221
   discovery_prefix: homeassistant
   device_name: "MCP2221 IO Controller"
@@ -50,3 +85,20 @@ mqtt:
   reconnect:
     min_delay: 1          # Minimale Reconnect-Verzögerung in Sekunden
     max_delay: 30         # Maximale Reconnect-Verzögerung in Sekunden
+
+# Debug-Konfiguration
+debugging:
+  level: "DEBUG"
+  mqtt:
+    process: True # bspw. Connection, disconnect etc.
+    send: True
+    receive: True
+  gpio: True        # Status des Auslesens (hinzugefügt)
+  system:
+    process: True # bspw. allgemeine Konfiguration, Entitäetssunabhaengige Zustandsfestlegung
+    entities: 
+      actors: True # bspw. Zustand für actor XX, ...
+      sensors: True # bspw. Zustand für sensor XX, ...
+  poll_interval: 0.1
+  sensors: true
+  actors: true
