@@ -1,11 +1,27 @@
+import mcp2221_io.const as const
+
 import time
 from termcolor import colored
-import digitalio
+# import digitalio
 from typing import Optional
 from mcp2221_io.new_core import get_logger
 from mcp2221_io.new_io_device import IODevice
 
+# Hardware-spezifische Importe
+if const.HW == const.MCP2221:
+    import digitalio
+    import board
+elif const.HW == const.FT232H:
+    # Hier könnten FT232H-spezifische Importe erfolgen
+    # z.B. import adafruit_blinka
+    pass
+
+
+
+
 logger = get_logger()
+
+
 
 
 class IOActor(IODevice):
@@ -15,8 +31,13 @@ class IOActor(IODevice):
     _toggle_start_time = 0
 
     def _post_init(self):
-        self._digital_pin.direction = digitalio.Direction.OUTPUT
-        self._digital_pin.value = self._inverted
+        if self._hw == const.MCP2221:
+            self._digital_pin.direction = digitalio.Direction.OUTPUT
+            self._digital_pin.value = self._inverted
+            self._hw_applied = True
+        else:
+            return False
+
         logger.debug("Aktor " + colored(self.name, 'magenta') +" wurde konfiguriert als OUTPUT")
         logger.debug("Pin-Status vor 'sync_state():'")
         logger.debug(f"     Raw-State: {self.state_raw}")
@@ -34,9 +55,11 @@ class IOActor(IODevice):
 
     def set_state(self, new_state: bool) -> None:
         """Setzt den Zustand des Aktors und den physischen Pin"""
-        if self._digital_pin:
-            logger.debug("Status (logisch) für Aktor " + colored(self.name, 'magenta') + f" auf '{not new_state}' gesetzt.") 
-            self._digital_pin.value = new_state
+        if self._hw == const.MCP2221:
+            if self._digital_pin:                
+                self._digital_pin.value = new_state
+                logger.debug("Status (logisch) für Aktor " + colored(self.name, 'magenta') + f" auf '{not new_state}' gesetzt.")
+
 
     def shutdown(self) -> bool:
         self.turn_off()

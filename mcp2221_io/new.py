@@ -1,13 +1,49 @@
+import mcp2221_io.const as const
+
 import os
 import time
 import yaml
-import digitalio
-import board
+
+
+
 import logging
 from termcolor import colored
 from typing import Dict, List, Optional, Any
-from mcp2221_io import MQTTClient, get_logger, get_config, IOController
+from mcp2221_io import get_logger, get_config, MQTTClient, IOController
+from mcp2221_io.const import MCP2221, FT232H, HW, validate_hardware_config
 
+
+def validate_hardware_config(config_value):
+    """
+    Überprüft, ob in der Hardware-Konfiguration genau ein Eintrag den Wert True hat.
+    
+    Args:
+        config_value: Der zurückgegebene Wert von config.get_value("use.hardware")
+        Kann ein Dictionary oder ein String sein.
+        
+    Returns:
+        bool: True wenn genau ein Eintrag True ist, sonst False
+    """
+    # Überprüfen, welcher Datentyp vorliegt
+    if isinstance(config_value, str):
+        # Wenn es ein String ist, konvertieren wir ihn zu einem Dictionary
+        import ast
+        try:
+            config_dict = ast.literal_eval(config_value)
+        except (SyntaxError, ValueError):
+            return False  # Ungültiges Format
+    elif isinstance(config_value, dict):
+        # Wenn es bereits ein Dictionary ist, verwenden wir es direkt
+        config_dict = config_value
+    else:
+        # Wenn es weder ein String noch ein Dictionary ist, ist es ungültig
+        return False
+    
+    # Zähle die Anzahl der True-Werte
+    true_count = sum(1 for value in config_dict.values() if value is True)
+    
+    # Überprüfe, ob genau ein Eintrag True ist
+    return true_count == 1
 
 
 
@@ -24,11 +60,34 @@ if __name__ == "__main__":
 
     # Logger initialisieren
     debug_level = config.get_value("logging.level", "WARNING")
-    # logger = Logger(debug_level).get_logger()
+
+    # Zu nutzende Hardware festlegen
+    hw_str = "NoHardware"
+
+    if not validate_hardware_config(config.get_value("hardware")):
+        logger.critical(colored("Die Konfiguration des Punkts 'hardware' ist fehlerhaft. Mögliche Fehler: KEIN Eintrag ODER MEHRERE Einträge sind 'true'.", "red"))
+        exit(1)
+
+    if config.get_value("hardware.mcp2221"):
+        const.HW = const.MCP2221
+        hw_str = "MCP2221"
+        import digitalio
+        import board
+    elif config.get_value("hardware.ft232h"):
+        const.HW = const.FT232H
+        hw_str = "FT232H"
+    else:
+        logger.critical(colored("Kein Hardware-Board konfiguriert!", "red"))
+        exit(1)
+
+    logger.info("Hardware festgelegt als " + hw_str)
+
 
     # MQTT-Client erstellen
     mqtt_client = MQTTClient(config.get_value('mqtt'), config.get_value('logging.mqtt'))
     mqtt_client.connect()  # Verbindung herstellen
+
+
 
     # Controller erstellen und starten
     controller = IOController(mqtt_client)

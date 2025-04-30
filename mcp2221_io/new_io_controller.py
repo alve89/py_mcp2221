@@ -1,10 +1,11 @@
-# mcp2221_io/new_classes.py
+
+import mcp2221_io.const as const
 
 import os
 import time
 import yaml
-import digitalio
-import board
+# import digitalio
+# import board
 import logging
 import json
 from termcolor import colored
@@ -13,6 +14,16 @@ from mcp2221_io.new_io_actor import IOActor
 from mcp2221_io.new_io_sensor import IOSensor
 from mcp2221_io.new_io_device import IODevice
 from mcp2221_io.new_core import logger, config
+
+# Hardware-spezifische Importe
+if const.HW == const.MCP2221:
+    import digitalio
+    import board
+elif const.HW == const.FT232H:
+    # Hier könnten FT232H-spezifische Importe erfolgen
+    # z.B. import adafruit_blinka
+    pass
+
 
 
 class IOController:
@@ -33,27 +44,40 @@ class IOController:
         try:
             logger.info("Entitäten werden erstellt.")
 
+            error_in_setup = False
+
             # Sensoren erstellen
             if 'sensors' in config:
                 for sensor_id, sensor_config in config['sensors'].items():
                     if sensor_config.get('entity_type') == 'binary_sensor':
-                        logger.debug(f"Entität {sensor_id} ist ein Sensor vom Typ '{sensor_config.get('entity_type')}'")
-                        self._create_binary_sensor(sensor_id, sensor_config)
+                        logger.debug("Entität " + colored(sensor_id, "blue") + f" ist ein Sensor vom Typ '{sensor_config.get('entity_type')}'")
+                        if not error_in_setup:
+                            if not self._create_binary_sensor(sensor_id, sensor_config):
+                                logger.warning("Fehler bei Einrichten des Sensors " + colored(sensor_id, "blue"))
+                                return False
+
       
             # Aktoren erstellen
             if 'actors' in config:
                 for actor_id, actor_config in config['actors'].items():
                     if actor_config.get('entity_type') == 'switch':
-                        logger.debug(f"Entität {actor_id} ist ein Sensor vom Typ '{actor_config.get('entity_type')}'")
-                        self._create_switch(actor_id, actor_config)
+                        logger.debug("Entität " + colored(actor_id, "magenta") + f" ist ein Aktor vom Typ '{actor_config.get('entity_type')}'")
+                        if not error_in_setup:
+                            if not self._create_switch(actor_id, actor_config):
+                                logger.warning("Fehler bei Einrichten des Aktors " + colored(actor_id, "magenta"))
+                                return False
             
-            logger.info(f"Geräte erfolgreich eingerichtet: {len(self.sensors)} Sensoren, {len(self.actors)} Aktoren")
+            if error_in_setup:
+                logger.warning("Es wurden NICHT alle Entitäten erfolgreich eingerichtet.")
+                return False
+
+            logger.info(f"Entitäten erfolgreich eingerichtet: {len(self.sensors)} Sensoren, {len(self.actors)} Aktoren")
             return True
         except Exception as e:
             print(f"Fehler beim Einrichten der Geräte: {e}")
             return False
     
-    def _create_binary_sensor(self, sensor_id: str, config: Dict[str, Any]) -> None:
+    def _create_binary_sensor(self, sensor_id: str, config: Dict[str, Any]) -> bool:
         """Erstellt einen binären Sensor basierend auf der Konfiguration."""
         sensor = IOSensor(
             pin=config['pin'],
@@ -71,10 +95,15 @@ class IOController:
         if 'stable_readings' in config:
             sensor.set_stable_readings(int(config['stable_readings']))
         
-        self.sensors[sensor_id] = sensor
-        logger.info(f"Sensor '{sensor_id}' erstellt (Pin: {config['pin']})")
+        if sensor._hw_applied:
+            self.sensors[sensor_id] = sensor
+            logger.info(f"Sensor '{sensor_id}' erstellt (Pin: {config['pin']})")
+            return True
+        else:
+            logger.critical(colored("Sensor " + sensor.name + " nicht erstellt, da keine Hardware definiert wurde!", "red"))
+            return False
     
-    def _create_switch(self, actor_id: str, config: Dict[str, Any]) -> None:
+    def _create_switch(self, actor_id: str, config: Dict[str, Any]) -> bool:
         """Erstellt einen Schalter basierend auf der Konfiguration."""
         actor = IOActor(
             pin=config['pin'],
@@ -93,9 +122,14 @@ class IOController:
             actor.turn_on()
         else:
             actor.turn_off()
-            
-        self.actors[actor_id] = actor
-        logger.info(f"Aktor '{actor_id}' erstellt (Pin: {config['pin']})")
+        
+        if actor._hw_applied:
+            self.actors[actor_id] = actor
+            logger.info(f"Aktor '{actor_id}' erstellt (Pin: {config['pin']})")
+            return True
+        else:
+            logger.critical(colored("Aktor " + actor.name + " nicht erstellt, da keine Hardware definiert wurde!", "red"))
+            return False
         
     def start(self) -> bool:
         """Startet den Controller und initialisiert alle Geräte."""

@@ -1,9 +1,21 @@
+import mcp2221_io.const as const
+
 import time
 from termcolor import colored
-import digitalio
+# import digitalio
 from typing import Optional
 from mcp2221_io.new_core import get_logger
 from mcp2221_io.new_io_device import IODevice
+
+# Hardware-spezifische Importe
+if const.HW == const.MCP2221:
+    import digitalio
+    import board
+elif const.HW == const.FT232H:
+    # Hier könnten FT232H-spezifische Importe erfolgen
+    # z.B. import adafruit_blinka
+    pass
+
 
 logger = get_logger()
 
@@ -21,7 +33,12 @@ class IOSensor(IODevice):
     _last_debounce = time.monotonic()
 
     def _post_init(self):
-        self._digital_pin.direction = digitalio.Direction.INPUT
+        if self._hw == const.MCP2221:
+            self._digital_pin.direction = digitalio.Direction.INPUT
+            self._hw_applied = True
+        else:
+            return False
+
         logger.debug(f"Sensor " + colored(self.name, 'blue') +" wurde konfiguriert als INPUT")
         logger.debug("Pin-Status vor 'sync_state():'")
         logger.debug(f"     Raw-State: {self.state_raw}")

@@ -1,10 +1,23 @@
-import digitalio
-import board
+import mcp2221_io.const as const
+
 from termcolor import colored
 from typing import Optional
 from mcp2221_io.new_core import get_logger
 
+
+# Hardware-spezifische Importe
+if const.HW == const.MCP2221:
+    import digitalio
+    import board
+elif const.HW == const.FT232H:
+    # Hier könnten FT232H-spezifische Importe erfolgen
+    # z.B. import adafruit_blinka
+    pass
+
+
 logger = get_logger()
+
+
 
 
 class IODevice:
@@ -18,6 +31,8 @@ class IODevice:
     _state: bool = False
     _state_raw: bool = False
     _type: str = None
+    _hw: int = None
+    _hw_applied = False
 
     def __init__(self, pin: str, type: str, inverted: bool = False, name: str = "No Name Given", device_class: str = ""):
         self._device_class = device_class
@@ -27,9 +42,11 @@ class IODevice:
         self._state: bool = False
         self._state_raw: bool = False
         self._type: str = type
-        
-        self._gpio_pin = getattr(board, self._pin)
-        self._digital_pin = digitalio.DigitalInOut(self._gpio_pin)
+        self._hw = const.HW
+
+        if self._hw == const.MCP2221:
+            self._gpio_pin = getattr(board, self._pin)
+            self._digital_pin = digitalio.DigitalInOut(self._gpio_pin)
 
         self._post_init()  # <- Hook wird automatisch aufgerufen
 
@@ -90,7 +107,8 @@ class IODevice:
 
     def sync_state(self) -> None:
         """"Speichert den aktuellen physischen Status des Pins in die Variable '_state_raw'"""
-        self._state_raw = self._digital_pin.value
+        if self._hw == const.MCP2221:
+            self._state_raw = self._digital_pin.value
 
         # Speichere den aktuellen logischen Wert als letzten Wert und überschreibe den aktuellen logischen Wert
         self._last_state = self._state
